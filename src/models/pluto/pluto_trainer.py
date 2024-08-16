@@ -99,8 +99,9 @@ class LightningTrainer(pl.LightningModule):
         :return: model's scalar loss
         """
         features, targets, scenarios = batch
+        features["feature"].data["agent"]["target"] = features["feature"].data["agent"]["target"][..., self.history_steps:, :]
         res = self.forward(features["feature"].data)
-
+        # print('prediction.shape', res['prediction'].shape)
         losses = self._compute_objectives(res, features["feature"].data)
         metrics = self._compute_metrics(res, features["feature"].data, prefix)
         self._log_step(losses["loss"], losses, metrics, prefix)

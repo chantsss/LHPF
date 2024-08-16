@@ -37,7 +37,7 @@ trainer:
     gradient_clip_val: 5.0  # value to clip gradients
     gradient_clip_algorithm: norm  # [value, norm] method to clip gradients
     sync_batchnorm: true
-    strategy: ddp_find_unused_parameters_false
+    strategy: ddp_find_unused_parameters_true
 
     # checkpoint_callback: true  # enable default checkpoint
 

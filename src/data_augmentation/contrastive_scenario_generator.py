@@ -287,10 +287,10 @@ class ContrastiveScenarioGenerator(AbstractAugmentor):
         new_category = agent["category"][idx] if idx != 0 else np.array(1)
         new_target = np.concatenate(
             (
-                new_position[self.history_steps :]
+                new_position[:]
                 - new_position[self.history_steps - 1],
                 (
-                    new_heading[self.history_steps :]
+                    new_heading[:]
                     - new_heading[self.history_steps - 1]
                 )[:, None],
             ),

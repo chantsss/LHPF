@@ -226,16 +226,17 @@ class PlutoFeature(AbstractModelFeature):
             data["reference_line"]["orientation"] -= center_angle
 
         target_position = (
-            data["agent"]["position"][:, hist_steps:]
+            data["agent"]["position"][:, :]
             - data["agent"]["position"][:, hist_steps - 1][:, None]
         )
         target_heading = (
-            data["agent"]["heading"][:, hist_steps:]
+            data["agent"]["heading"][:, :]
             - data["agent"]["heading"][:, hist_steps - 1][:, None]
         )
         target = np.concatenate([target_position, target_heading[..., None]], -1)
-        target[~data["agent"]["valid_mask"][:, hist_steps:]] = 0
+        target[~data["agent"]["valid_mask"][:, :]] = 0
         data["agent"]["target"] = target
+        # print('target.shape is ', target.shape)
 
         if first_time:
             point_position = data["map"]["point_position"]

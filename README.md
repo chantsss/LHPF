@@ -44,10 +44,10 @@ sh ./script/setup_env.sh
 Preprocess the dataset to accelerate training. It is recommended to run a small sanity check to make sure everything is correctly setup.
 
 ```
- python run_training.py \
+ python -m pdb run_training.py \
     py_func=cache +training=train_pluto \
     scenario_builder=nuplan_mini \
-    cache.cache_path=/nuplan/exp/sanity_check \
+    cache.cache_path=/media/sheng/ssd/dataset/nuplan/exp/sanity \
     cache.cleanup_cache=true \
     scenario_filter=training_scenarios_tiny \
     worker=sequential
@@ -58,13 +58,13 @@ Then preprocess the whole nuPlan training set (this will take some time). You ma
 ```
  export PYTHONPATH=$PYTHONPATH:$(pwd)
 
- python run_training.py \
+ HYDRA_FULL_ERROR=1 python run_training.py \
     py_func=cache +training=train_pluto \
     scenario_builder=nuplan \
-    cache.cache_path=/nuplan/exp/cache_pluto_1M \
+    cache.cache_path=/media/sheng/ssd/dataset/nuplan/exp/cache_pluto_2_10M \
     cache.cleanup_cache=true \
-    scenario_filter=training_scenarios_1M \
-    worker.threads_per_node=40
+    scenario_filter=training_scenarios_2_10M \
+    worker.threads_per_node=6
 ```
 
 ## Training
@@ -77,18 +77,18 @@ Same, it is recommended to run a sanity check first:
 CUDA_VISIBLE_DEVICES=0 python run_training.py \
   py_func=train +training=train_pluto \
   worker=single_machine_thread_pool worker.max_workers=4 \
-  scenario_builder=nuplan cache.cache_path=/nuplan/exp/sanity_check cache.use_cache_without_dataset=true \
+  scenario_builder=nuplan cache.cache_path=/media/sheng/ssd/dataset/nuplan/exp/sanity cache.use_cache_without_dataset=true \
   data_loader.params.batch_size=4 data_loader.params.num_workers=1
 ```
 
 Training on the full dataset (without CIL):
 
 ```
-CUDA_VISIBLE_DEVICES=0,1,2,3 python run_training.py \
+CUDA_VISIBLE_DEVICES=0 python run_training.py \
   py_func=train +training=train_pluto \
-  worker=single_machine_thread_pool worker.max_workers=32 \
-  scenario_builder=nuplan cache.cache_path=/nuplan/exp/cache_pluto_1M cache.use_cache_without_dataset=true \
-  data_loader.params.batch_size=32 data_loader.params.num_workers=16 \
+  worker=single_machine_thread_pool worker.max_workers=12 \
+  scenario_builder=nuplan cache.cache_path=/media/sheng/ssd/dataset/nuplan/exp/cache_pluto_2_10M cache.use_cache_without_dataset=true \
+  data_loader.params.batch_size=8 data_loader.params.num_workers=12 \
   lr=1e-3 epochs=25 warmup_epochs=3 weight_decay=0.0001 \
   wandb.mode=online wandb.project=nuplan wandb.name=pluto
 ```

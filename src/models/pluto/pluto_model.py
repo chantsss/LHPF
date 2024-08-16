@@ -175,6 +175,8 @@ class PlanningModel(TorchModuleWrapper):
             "prediction": prediction,  # (bs, A-1, T, 2)
         }
 
+        print('out["prediction"].shape is ', out["prediction"].shape)
+
         if self.use_hidden_proj:
             out["hidden"] = self.hidden_proj(x[:, 0])
 
