@@ -47,19 +47,19 @@ class AgentEncoder(nn.Module):
 
         return torch.where(
             vec_mask,
-            feat[:, :, 1:, ...] - feat[:, :, :-1, ...],
-            torch.zeros_like(feat[:, :, 1:, ...]),
+            feat[:, :, :, 1:, ...] - feat[:, :, :, :-1, ...],
+            torch.zeros_like(feat[:, :, :, 1:, ...]),
         )
 
     def forward(self, data, select_indices=None):
         T = self.hist_steps
 
-        position = data["agent"]["position"][:, :, :T:]
-        heading = data["agent"]["heading"][:, :, :T]
-        velocity = data["agent"]["velocity"][:, :, :T]
-        shape = data["agent"]["shape"][:, :, :T]
+        position = data["agent"]["position"][:, :, :, :T]
+        heading = data["agent"]["heading"][:, :, :, :T]
+        velocity = data["agent"]["velocity"][:, :, :, :T]
+        shape = data["agent"]["shape"][:, :, :, :T]
         category = data["agent"]["category"].long()
-        valid_mask = data["agent"]["valid_mask"][:, :, :T]
+        valid_mask = data["agent"]["valid_mask"][:, :, :, :T]
 
         heading_vec = self.to_vector(heading, valid_mask)
         valid_mask_vec = valid_mask[..., 1:] & valid_mask[..., :-1]
@@ -68,39 +68,37 @@ class AgentEncoder(nn.Module):
                 self.to_vector(position, valid_mask),
                 self.to_vector(velocity, valid_mask),
                 torch.stack([heading_vec.cos(), heading_vec.sin()], dim=-1),
-                shape[:, :, 1:],
+                shape[:, :, :, 1:],
                 valid_mask_vec.float().unsqueeze(-1),
             ],
             dim=-1,
         )
-        bs, A, T, _ = agent_feature.shape
-        # agent_feature = agent_feature.view(bs * A, T, -1)
-        # valid_agent_mask = valid_mask.any(-1).flatten()
+        bs, used_T, A, T, _ = agent_feature.shape
 
-        # x_agent_all_time = torch.zeros(bs, T, A, self.dim, device=position.device)
-        valid_mask_all_time = torch.zeros(bs, T, A, valid_mask.shape[-1], device=position.device)
-        agent_feature_all_time = torch.zeros(bs, T, A, T, agent_feature.shape[-1], device=position.device)
+        # valid_mask_all_time = torch.zeros(bs, T, A, valid_mask.shape[-1], device=position.device)
+        # agent_feature_all_time = torch.zeros(bs, T, A, T, agent_feature.shape[-1], device=position.device)
 
-        for t in range(1, T+1):
-            # Build agent_feature for each time stepp t
-            agent_feature_tmp = torch.zeros_like(agent_feature)
-            valid_mask_tmp = torch.zeros_like(valid_mask)
-            agent_feature_tmp[:, :, :t] = agent_feature[:, :, :t]
-            # agent_feature_tmp = agent_feature_tmp.view(bs * A, T, -1)
-            valid_mask_tmp[:, :, :t+1] = valid_mask[:, :, :t+1]
-            # valid_mask_tmp = valid_mask_tmp.any(-1).flatten()
-            agent_feature_all_time[:, t-1] = agent_feature_tmp
-            valid_mask_all_time[:, t-1] = valid_mask_tmp
+        # for t in range(1, T+1):
+        #     # Build agent_feature for each time stepp t
+        #     agent_feature_tmp = torch.zeros_like(agent_feature)
+        #     valid_mask_tmp = torch.zeros_like(valid_mask)
+        #     agent_feature_tmp[:, :, :t] = agent_feature[:, :, :t]
+        #     # agent_feature_tmp = agent_feature_tmp.view(bs * A, T, -1)
+        #     valid_mask_tmp[:, :, :t+1] = valid_mask[:, :, :t+1]
+        #     # valid_mask_tmp = valid_mask_tmp.any(-1).flatten()
+        #     agent_feature_all_time[:, t-1] = agent_feature_tmp
+        #     valid_mask_all_time[:, t-1] = valid_mask_tmp
 
-        # agent_feature_all_time = agent_feature_all_time.view(bs * T * A, T, -1)
-        # valid_mask_all_time = valid_mask_all_time.view(bs * T, A, -1).any(-1).flatten()
+        # agent_feature_all_time = agent_feature_all_time[:, :self.hist_steps].index_select(1, select_indices-1)
+        # valid_mask_all_time = valid_mask_all_time[:, :self.hist_steps].index_select(1, select_indices-1)
 
-        agent_feature_all_time = agent_feature_all_time[:, :self.hist_steps].index_select(1, select_indices-1)
-        valid_mask_all_time = valid_mask_all_time[:, :self.hist_steps].index_select(1, select_indices-1)
+        # _, used_T = agent_feature_all_time.shape[:2]
+        # agent_feature_all_time = agent_feature_all_time.contiguous().view(bs * used_T * A, T, -1)
+        # valid_mask_all_time = valid_mask_all_time.contiguous().view(bs * used_T, A, -1).any(-1).flatten()
 
-        _, used_T = agent_feature_all_time.shape[:2]
-        agent_feature_all_time = agent_feature_all_time.contiguous().view(bs * used_T * A, T, -1)
-        valid_mask_all_time = valid_mask_all_time.contiguous().view(bs * used_T, A, -1).any(-1).flatten()
+
+        agent_feature_all_time = agent_feature.contiguous().view(bs * used_T * A, T, -1)
+        valid_mask_all_time = valid_mask.contiguous().view(bs * used_T, A, -1).any(-1).flatten()
 
         x_agent_tmp = self.history_encoder(
             agent_feature_all_time[valid_mask_all_time].permute(0, 2, 1).contiguous()
@@ -110,7 +108,7 @@ class AgentEncoder(nn.Module):
         x_agent_all_time[valid_mask_all_time] = x_agent_tmp
         x_agent_all_time = x_agent_all_time.view(bs, used_T, A, self.dim)
         
-        x_type_all_time = self.type_emb(category.unsqueeze(1).repeat(1, used_T, 1))
+        x_type_all_time = self.type_emb(category)
 
         return x_agent_all_time + x_type_all_time
 

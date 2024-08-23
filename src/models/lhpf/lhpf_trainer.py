@@ -127,7 +127,7 @@ class LightningTrainer(pl.LightningModule):
 
         targets_pos = data["agent"]["target"][:train_num]
         valid_mask = data["agent"]["valid_mask"][:train_num, :, :]
-        targets_vel = data["agent"]["velocity"][:train_num, :, :]
+        targets_vel = data["agent"]["velocity"][:train_num, -1, :]
 
         target = torch.cat(
             [
@@ -142,9 +142,9 @@ class LightningTrainer(pl.LightningModule):
 
         bs, TH, R, M, TF, _ = trajectory.shape
         ego_target_all, ego_target_all_mask = generate_target(position=target[:, 0], 
-                                                        mask=data["agent"]["valid_mask"][:,0],
+                                                        mask=data["agent"]["valid_mask"][:,-1, 0],
                                                         num_historical_steps=20,
-                                                        num_future_steps=TF)  #[(N1,...Nb),H,F,2],[(N1,...Nb),H,F]
+                                                        num_future_steps=TF, targets_pos=targets_pos)  #[(N1,...Nb),H,F,2],[(N1,...Nb),H,F]
         ego_target_all = ego_target_all.index_select(1, res["select_indices"]-1)
         ego_target_all_mask = ego_target_all_mask.index_select(1, res["select_indices"]-1)
 
@@ -172,7 +172,7 @@ class LightningTrainer(pl.LightningModule):
 
         # prediction loss
         prediction_loss = self.get_prediction_loss(
-            data, prediction, valid_mask[:, 1:, self.history_steps:], target[:, 1:, self.history_steps:]
+            prediction, valid_mask[:, -1, 1:, self.history_steps:], target[:, 1:, self.history_steps:]
         )
 
         if self.training and self.use_contrast_loss:
@@ -205,7 +205,7 @@ class LightningTrainer(pl.LightningModule):
             "his_prediction_cls_loss": his_prediction_cls_loss.item(),
         }
 
-    def get_prediction_loss(self, data, prediction, valid_mask, target):
+    def get_prediction_loss(self, prediction, valid_mask, target):
         """
         prediction: (bs, A-1, T, 6)
         valid_mask: (bs, A-1, T)
@@ -225,7 +225,7 @@ class LightningTrainer(pl.LightningModule):
         """
         num_valid_points = valid_mask.sum(-1)
         endpoint_index = (num_valid_points / 10).long().clamp_(min=0, max=7)  # max 8s
-        r_padding_mask = ~data["reference_line"]["valid_mask"][:bs].any(-1)  # (bs, R)
+        r_padding_mask = ~data["reference_line"]["valid_mask"][:bs, -1].any(-1)  # (bs, R)
         future_projection = data["reference_line"]["future_projection"][:bs][
             torch.arange(bs), :, endpoint_index
         ]
@@ -287,7 +287,7 @@ class LightningTrainer(pl.LightningModule):
 
             num_valid_points = valid_mask_once.sum(-1)
             endpoint_index = (num_valid_points / 10).long().clamp_(min=0, max=7)  # max 8s
-            r_padding_mask = ~data["reference_line"]["valid_mask"][:bs].any(-1)  # (bs, R)
+            r_padding_mask = ~data["reference_line"]["valid_mask"][:bs, i].any(-1)  # (bs, R)
             future_projection = data["reference_line"]["future_projection"][:bs][
                 torch.arange(bs), :, endpoint_index
             ]
@@ -369,7 +369,7 @@ class LightningTrainer(pl.LightningModule):
         """
         # get top 6 modes
         trajectory, probability = res["trajectory"], res["probability"]
-        r_padding_mask = ~data["reference_line"]["valid_mask"].any(-1)
+        r_padding_mask = ~data["reference_line"]["valid_mask"][:, -1].any(-1)
         probability.masked_fill_(r_padding_mask.unsqueeze(-1), -1e6)
 
         bs, R, M, T, _ = trajectory.shape
@@ -383,7 +383,7 @@ class LightningTrainer(pl.LightningModule):
             "probability": top_k_prob,
             "prediction": res["prediction"][..., :2],
             "prediction_target": data["agent"]["target"][:, 1:],
-            "valid_mask": data["agent"]["valid_mask"][:, 1:, self.history_steps :],
+            "valid_mask": data["agent"]["valid_mask"][:, -1, 1:, self.history_steps :],
         }
         target = data["agent"]["target"][:, 0]
 
@@ -564,9 +564,13 @@ class LightningTrainer(pl.LightningModule):
     #     for name, param in self.named_parameters():
     #         if param.grad is None:
     #             print("unused param", name)
-def generate_target(position: torch.Tensor, mask: torch.Tensor, num_historical_steps: int, num_future_steps: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def generate_target(position: torch.Tensor, mask: torch.Tensor, num_historical_steps: int, num_future_steps: int, targets_pos: torch.Tensor,) -> Tuple[torch.Tensor, torch.Tensor]:
     target_traj = [position[:, i+1:i+1+num_future_steps] for i in range(num_historical_steps)]
     target_traj = torch.stack(target_traj, dim=1)
     target_mask = [mask[:,i+1:i+1+num_future_steps] for i in range(num_historical_steps)]
     target_mask = torch.stack(target_mask, dim=1)
+    for i in range(num_historical_steps):
+        target_traj[:,i,:,:2] = target_traj[:,i,:,:2] - target_traj[:,i,0,:2].unsqueeze(1)
+        heading = targets_pos[:,0,i+1:i+1+num_future_steps,2] - targets_pos[:,0,i,2].unsqueeze(1)
+        target_traj[:,i,:,2:4] = torch.stack([heading.cos(), heading.sin()], dim=-1)
     return target_traj, target_mask

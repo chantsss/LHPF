@@ -65,12 +65,12 @@ class DecoderLayer(nn.Module):
         tgt = tgt.transpose(2, 3).reshape(bs * used_T * M, R, D)
         tgt2 = self.norm1(tgt)
         tgt2 = self.r2r_attn(
-            tgt2, tgt2, tgt2, key_padding_mask=tgt_key_padding_mask.repeat(used_T * M, 1)
+            tgt2, tgt2, tgt2, key_padding_mask=tgt_key_padding_mask.repeat(1, M, 1).reshape(M * bs * used_T, -1)
         )[0]
         tgt = tgt + self.dropout1(tgt2)
 
         tgt_tmp = tgt.reshape(bs, used_T, M, R, D).transpose(2, 3).reshape(bs * used_T * R, M, D)
-        tgt_valid_mask = ~tgt_key_padding_mask.repeat(used_T, 1).reshape(-1)
+        tgt_valid_mask = ~tgt_key_padding_mask.reshape(-1)
         tgt_valid = tgt_tmp[tgt_valid_mask]
         tgt2_valid = self.norm2(tgt_valid)
         tgt2_valid, _ = self.m2m_attn(
@@ -182,18 +182,16 @@ class PlanningDecoder(nn.Module):
             dim=-1,
         )
 
-        bs, R, P, C = r_feature.shape
-        r_valid_mask = r_valid_mask.view(bs * R, P)
-        r_feature = r_feature.reshape(bs * R, P, C)
-        r_emb = self.r_encoder(r_feature, r_valid_mask).view(bs, R, -1)
+        bs, used_T, R, P, C = r_feature.shape
+        r_valid_mask = r_valid_mask.view(bs * used_T * R, P)
+        r_feature = r_feature.reshape(bs * used_T * R, P, C)
+        r_emb = self.r_encoder(r_feature, r_valid_mask).view(bs, used_T, R, -1)
 
-        r_pos = torch.cat([r_position[:, :, 0], r_orientation[:, :, 0, None]], dim=-1)
+        r_pos = torch.cat([r_position[:, :, :, 0], r_orientation[:, :, :, 0, None]], dim=-1)
         r_emb = r_emb + self.r_pos_emb(r_pos)
 
-        r_emb = r_emb.unsqueeze(2).repeat(1, 1, self.num_mode, 1)
-
         if self.use_history_attention:
-            r_emb = r_emb.unsqueeze(1).repeat(1, used_T, 1, 1, 1)
+            r_emb = r_emb.unsqueeze(-2).repeat(1, 1, 1, self.num_mode, 1)
             m_emb = self.m_emb.unsqueeze(1).repeat(bs, used_T, R, 1, 1)
         else:
             r_emb = r_emb.repeat(1, 1, 1, 1)
