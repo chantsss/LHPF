@@ -80,12 +80,12 @@ class DecoderLayer(nn.Module):
         tgt = torch.zeros_like(tgt_tmp)
         tgt[tgt_valid_mask] = tgt_valid
 
-        if used_T != 1:
-            tgt = tgt.reshape(bs, used_T, M, R, D).view(bs * used_T, R * M, D)
-            tgt2 = self.norm3(tgt)
-            tgt2 = self.cross_attn(
-                tgt2, memory.reshape(bs*used_T, -1, D), memory.reshape(bs*used_T, -1, D), key_padding_mask=memory_key_padding_mask
-            )[0]
+        # if used_T != 1:
+        tgt = tgt.reshape(bs, used_T, M, R, D).view(bs * used_T, R * M, D)
+        tgt2 = self.norm3(tgt)
+        tgt2 = self.cross_attn(
+            tgt2, memory.reshape(bs*used_T, -1, D), memory.reshape(bs*used_T, -1, D), key_padding_mask=memory_key_padding_mask
+        )[0]
         # else:
         #     tgt = tgt.reshape(bs, R, M, D).view(bs, R * M, D)
         #     tgt2 = self.norm3(tgt)
@@ -94,22 +94,22 @@ class DecoderLayer(nn.Module):
         #     )[0]  
         tgt = tgt + self.dropout2(tgt2)
 
-
-        tgt = tgt.reshape(bs, used_T, R, M, D).permute(0, 2, 3, 1, 4).reshape(bs * R * M , used_T, D)
-        tgt2 = self.norm4(tgt)
-        # build upper diagnal mask to avoid future leaking
-        attn_mask = torch.triu(torch.ones(used_T, used_T), diagonal=1).bool().to(tgt.device)
-        tgt2 = self.h2h_attn(tgt2, tgt2, tgt2, attn_mask=attn_mask)[0]
-        tgt = tgt + self.dropout3(tgt2)
+        # if used_T != 1:
+        #     tgt = tgt.reshape(bs, used_T, R, M, D).permute(0, 2, 3, 1, 4).reshape(bs * R * M , used_T, D)
+        #     tgt2 = self.norm4(tgt)
+        #     # build upper diagnal mask to avoid future leaking
+        #     attn_mask = torch.triu(torch.ones(used_T, used_T), diagonal=1).bool().to(tgt.device)
+        #     tgt2 = self.h2h_attn(tgt2, tgt2, tgt2, attn_mask=attn_mask)[0]
+        #     tgt = tgt + self.dropout3(tgt2)
 
         tgt2 = self.norm5(tgt)
         tgt2 = self.ffn(tgt2)
         tgt = tgt + self.dropout4(tgt2)
 
-        if used_T != 1:
-            tgt = tgt.reshape(bs, used_T, R, M, D)
-        else:
-            tgt = tgt.reshape(bs, R, M, D)
+        # if used_T != 1:
+        tgt = tgt.reshape(bs, used_T, R, M, D)
+        # else:
+        #     tgt = tgt.reshape(bs, R, M, D)
 
         return tgt
 
@@ -190,12 +190,12 @@ class PlanningDecoder(nn.Module):
         r_pos = torch.cat([r_position[:, :, :, 0], r_orientation[:, :, :, 0, None]], dim=-1)
         r_emb = r_emb + self.r_pos_emb(r_pos)
 
-        if self.use_history_attention:
-            r_emb = r_emb.unsqueeze(-2).repeat(1, 1, 1, self.num_mode, 1)
-            m_emb = self.m_emb.unsqueeze(1).repeat(bs, used_T, R, 1, 1)
-        else:
-            r_emb = r_emb.repeat(1, 1, 1, 1)
-            m_emb = self.m_emb.repeat(bs, R, 1, 1)
+        # if self.use_history_attention:
+        r_emb = r_emb.unsqueeze(-2).repeat(1, 1, 1, self.num_mode, 1)
+        m_emb = self.m_emb.unsqueeze(1).repeat(bs, used_T, R, 1, 1)
+        # else:
+        #     r_emb = r_emb.repeat(1, 1, 1, 1)
+        #     m_emb = self.m_emb.repeat(bs, R, 1, 1)
 
         q = self.q_proj(torch.cat([r_emb, m_emb], dim=-1))
 

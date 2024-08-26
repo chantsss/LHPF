@@ -201,8 +201,8 @@ class LightningTrainer(pl.LightningModule):
             "collision_loss": collision_loss.item(),
             "prediction_loss": prediction_loss.item(),
             "contrastive_loss": contrastive_loss.item(),
-            "his_prediction_reg_loss": his_prediction_reg_loss.item(),
-            "his_prediction_cls_loss": his_prediction_cls_loss.item(),
+            "his_prediction_reg_loss": his_prediction_reg_loss.item() if self.model.use_history_attention else 0,
+            "his_prediction_cls_loss": his_prediction_cls_loss.item() if self.model.use_history_attention else 0,
         }
 
     def get_prediction_loss(self, prediction, valid_mask, target):
@@ -275,6 +275,10 @@ class LightningTrainer(pl.LightningModule):
         """
 
         bs, Th, R, M, Tf, _ = trajectory.shape
+        
+        if Th==0 :
+            return 0, 0
+
         reg_loss_all = 0
         cls_loss_all = 0
 

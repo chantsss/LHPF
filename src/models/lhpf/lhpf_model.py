@@ -65,9 +65,13 @@ class PlanningModel(TorchModuleWrapper):
         self.ref_free_traj = ref_free_traj
         self.use_history_attention = use_history_attention
         self.use_history_attention_intervals = use_history_attention_intervals
-        self.select_indices = list(range(self.history_steps - 1, 0, -self.use_history_attention_intervals))
-        self.select_indices.reverse() 
-        self.select_indices = torch.tensor(self.select_indices, dtype=torch.long)
+        if self.use_history_attention:
+            self.select_indices = list(range(self.history_steps - 1, 0, -self.use_history_attention_intervals))
+            self.select_indices.reverse() 
+            self.select_indices = torch.tensor(self.select_indices, dtype=torch.long)
+        else:
+            self.select_indices = torch.tensor([19], dtype=torch.long)
+
 
 
         self.pos_emb = FourierEmbedding(3, dim, 64)
@@ -306,9 +310,9 @@ class PlanningModel(TorchModuleWrapper):
 
             output_prediction = torch.cat(
                 [
-                    prediction[..., :2] + agent_pos[:, 1:A, -1, None],
+                    prediction[..., :2] + agent_pos[:, -1, 1:A, None],
                     torch.atan2(prediction[..., 3], prediction[..., 2]).unsqueeze(-1)
-                    + agent_heading[:, 1:A, -1, None, None],
+                    + agent_heading[:, -1, 1:A,  None, None],
                     prediction[..., 4:6],
                 ],
                 dim=-1,
