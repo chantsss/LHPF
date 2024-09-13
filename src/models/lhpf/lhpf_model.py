@@ -112,6 +112,7 @@ class PlanningModel(TorchModuleWrapper):
             cat_x=cat_x,
             future_steps=future_steps,
             use_history_attention=use_history_attention,
+            used_T=len(self.select_indices),
         )
 
         if use_hidden_proj:

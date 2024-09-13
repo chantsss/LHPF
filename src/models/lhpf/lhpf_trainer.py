@@ -158,15 +158,18 @@ class LightningTrainer(pl.LightningModule):
             data, trajectory[:, :-1], probability[:, :-1], ego_target_all_mask[:, :-1], ego_target_all[:, :-1], train_num
         )
 
+        # # compliant loss between history prediction and planning
+        # compliant_loss = self.get_his_current_compliant_loss()
+
         if ref_free_trajectory is not None:
             ego_ref_free_reg_loss = F.smooth_l1_loss(
                 ref_free_trajectory[:train_num],
-                target[:, 0, :, : ref_free_trajectory.shape[-1]],
+                ego_target_all[:, -1, ..., :ref_free_trajectory.shape[-1]],
                 reduction="none",
             ).sum(-1)
             ego_ref_free_reg_loss = (
-                ego_ref_free_reg_loss * valid_mask[:, 0]
-            ).sum() / valid_mask[:, 0].sum()
+                ego_ref_free_reg_loss * ego_target_all_mask[:, -1]
+            ).sum() / ego_target_all_mask[:, -1].sum()
         else:
             ego_ref_free_reg_loss = ego_reg_loss.new_zeros(1)
 

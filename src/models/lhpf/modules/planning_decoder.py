@@ -8,6 +8,19 @@ from ..layers.embedding import PointsEncoder
 from ..layers.fourier_embedding import FourierEmbedding
 from ..layers.mlp_layer import MLPLayer
 
+class SinusoidalPositionEmbeddings(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, time):
+        device = time.device
+        half_time = self.dim // 2
+        embeddings = math.log(10000) / (half_time - 1)
+        embeddings = torch.exp(torch.arange(half_time, device=device) * -embeddings)
+        embeddings = time[:, None] * embeddings[None, :]
+        embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
+        return embeddings
 
 class DecoderLayer(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio, dropout) -> None:
@@ -127,6 +140,7 @@ class PlanningDecoder(nn.Module):
         yaw_constraint=False,
         cat_x=False,
         use_history_attention=False,
+        used_T=1,
     ) -> None:
         super().__init__()
 
@@ -135,6 +149,7 @@ class PlanningDecoder(nn.Module):
         self.yaw_constraint = yaw_constraint
         self.cat_x = cat_x
         self.use_history_attention = use_history_attention
+        self.used_T = used_T
 
         self.decoder_blocks = nn.ModuleList(
             [
@@ -150,7 +165,20 @@ class PlanningDecoder(nn.Module):
 
         self.m_emb = nn.Parameter(torch.Tensor(1, 1, num_mode, dim))
         self.m_pos = nn.Parameter(torch.Tensor(1, num_mode, dim))
-
+        # self.h_emb = nn.Parameter(torch.Tensor(1, used_T, num_mode, dim * 2))
+        # nn.init.normal_(self.h_emb, mean=0.0, std=0.01)
+        # nn.Parameter(torch.Tensor(1, used_T, num_mode, dim * 2))
+        # device = time.device
+        # self.time_mlp = nn.Linear(1, 2 * dim)
+        # time = torch.tensor([used_T])
+        # half_time = used_T/2
+        # embeddings = torch.log(torch.tensor(20)) / (half_time - 1)
+        # embeddings = torch.exp(torch.arange(half_time) * -embeddings)
+        # embeddings = time[:, None] * embeddings[None, :]
+        # h_emb = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1).unsqueeze(-1).unsqueeze(-1)
+        # self.h_emb = torch.nn.Parameter(h_emb.repeat(1, 1, num_mode, 1)) 
+        self.h_emb = nn.Embedding(num_embeddings=self.used_T, embedding_dim=dim * 2)
+        
         if self.cat_x:
             self.cat_x_proj = nn.Linear(2 * dim, dim)
 
@@ -161,6 +189,7 @@ class PlanningDecoder(nn.Module):
 
         nn.init.normal_(self.m_emb, mean=0.0, std=0.01)
         nn.init.normal_(self.m_pos, mean=0.0, std=0.01)
+        # nn.init.normal_(self.h_emb, mean=0.0, std=0.01)
 
     def forward(self, data, enc_data):
         enc_emb = enc_data["enc_emb"]
@@ -193,11 +222,14 @@ class PlanningDecoder(nn.Module):
         # if self.use_history_attention:
         r_emb = r_emb.unsqueeze(-2).repeat(1, 1, 1, self.num_mode, 1)
         m_emb = self.m_emb.unsqueeze(1).repeat(bs, used_T, R, 1, 1)
+        used_T_list = torch.tensor(range(self.used_T), dtype=torch.long, device=m_emb.device)
+        h_emb = self.h_emb(used_T_list) # 5, 256
+        h_emb = h_emb.unsqueeze(0).unsqueeze(2).unsqueeze(2).repeat(bs, 1, R, self.num_mode, 1)
         # else:
         #     r_emb = r_emb.repeat(1, 1, 1, 1)
         #     m_emb = self.m_emb.repeat(bs, R, 1, 1)
-
-        q = self.q_proj(torch.cat([r_emb, m_emb], dim=-1))
+        # q = self.q_proj(torch.cat([r_emb, m_emb], dim=-1))
+        q = self.q_proj(torch.cat([r_emb, m_emb], dim=-1) + h_emb)
 
         for blk in self.decoder_blocks:
             q = blk(
