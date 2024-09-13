@@ -236,10 +236,10 @@ class NuplanScenarioRender:
         self._plot_ego(ax, ego_state)
 
         if gt_state is not None:
-            self._plot_ego(ax, gt_state, gt=True)
+            self._plot_ego(ax, gt_state, gt=True, draw_speed=False)
             gt_trajectory = np.array([state.rear_axle.array for state in gt_trajectory])
             gt_trajectory = np.matmul(gt_trajectory - self.origin, self.rot_mat)
-            ax.plot(gt_trajectory[:, 0], gt_trajectory[:, 1], color="blue", alpha=0.5)
+            ax.plot(gt_trajectory[:, 0], gt_trajectory[:, 1], color="black", alpha=0.5, zorder=7, linestyle="--")
 
         if not self.disable_agent:
             for track in tracked_objects.tracked_objects:
@@ -337,7 +337,7 @@ class NuplanScenarioRender:
             )
             ax.add_patch(polygon)
 
-    def _plot_ego(self, ax, ego_state: EgoState, gt=False):
+    def _plot_ego(self, ax, ego_state: EgoState, gt=False, draw_speed=True):
         kwargs = {"lw": 1.5}
         if gt:
             ax.add_patch(
@@ -367,6 +367,16 @@ class NuplanScenarioRender:
             linewidth=1.5,
             zorder=11,
         )
+        # plot speed here
+        if draw_speed:
+            ax.text(
+                1.69 + self.length * 0.75,
+                0,
+                f"{ego_state.dynamic_car_state.speed:.2f}",
+                color="black",
+                zorder=11,
+                fontsize=10,
+            )
 
     def _plot_tracked_object(self, ax, track: TrackedObject, agent_attn_weights=None):
         center, angle = track.center.array, track.center.heading

@@ -61,9 +61,9 @@ Then preprocess the whole nuPlan training set (this will take some time). You ma
  HYDRA_FULL_ERROR=1 python run_training.py \
     py_func=cache +training=train_pluto \
     scenario_builder=nuplan \
-    cache.cache_path=/media/sheng/ssd/dataset/nuplan/exp/cache_pluto_2_10M \
+    cache.cache_path=/media/sheng/ssd/dataset/nuplan/exp/cache_pluto_1_10M \
     cache.cleanup_cache=true \
-    scenario_filter=training_scenarios_2_10M \
+    scenario_filter=training_scenarios_1_10M \
     worker.threads_per_node=6
 ```
 
@@ -113,6 +113,14 @@ Run simulation for a random scenario in the nuPlan-mini split
 
 ```
 sh ./script/run_pluto_planner.sh pluto_planner nuplan_mini mini_demo_scenario pluto_1M_aux_cil.ckpt /dir_to_save_the_simulation_result_video
+
+sh ./script/run_pluto_planner.sh pluto_planner nuplan_mini mini_demo_scenario pluto_50.ckpt /media/sheng/ssd/dataset/nuplan/exp/exp/50/
+
+#pluto
+HYDRA_FULL_ERROR=1 python -m pdb run_simulation.py +simulation=closed_loop_nonreactive_agents planner=pluto_planner scenario_builder=nuplan_mini  scenario_filter=mini_demo_scenario worker=sequential verbose=true experiment_uid=pluto_planner/mini_demo_scenario planner.pluto_planner.render=true planner.pluto_planner.planner_ckpt=/home/sheng/pluto/checkpoints/pluto_50.ckpt +planner.pluto_planner.save_dir=/media/sheng/ssd/dataset/nuplan/exp/exp/50/
+
+#lhpf
+
 ```
 
 The rendered simulation video will be saved to the specified directory (need change `/dir_to_save_the_simulation_result_video`).

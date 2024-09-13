@@ -79,6 +79,9 @@ def run_simulation(
     if isinstance(planners, AbstractPlanner):
         planners = [planners]
 
+    challenge_mode = cfg['job_name']
+    cfg['planner'][list(cfg['planner'].keys())[0]]['challenge_mode'] = challenge_mode
+
     runners = build_simulations(
         cfg=cfg,
         callbacks=callbacks,

@@ -54,6 +54,7 @@ class PlutoPlanner(AbstractPlanner):
         eval_num_frames: int = 80,
         learning_based_score_weight: float = 0.25,
         use_prediction: bool = True,
+        challenge_mode: str = None,
     ) -> None:
         """
         Initializes the ML planner class.
@@ -62,6 +63,7 @@ class PlutoPlanner(AbstractPlanner):
         self._render = render
         self._imgs = []
         self._scenario = scenario
+        self._challenge_mode = challenge_mode
         if use_gpu:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
@@ -97,10 +99,13 @@ class PlutoPlanner(AbstractPlanner):
         if render:
             self._scene_render = NuplanScenarioRender()
             if save_dir is not None:
-                self.video_dir = Path(save_dir)
+                self.save_dir = Path(save_dir)
             else:
-                self.video_dir = Path(os.getcwd())
+                self.save_dir = Path(os.getcwd())
+            self.video_dir = self.save_dir/ "video" 
             self.video_dir.mkdir(exist_ok=True, parents=True)
+            self.images_dir = self.save_dir/ "image" 
+            self.images_dir.mkdir(exist_ok=True, parents=True)
 
     @torch.no_grad()
     def _infer_model(self, features: FeaturesType) -> npt.NDArray[np.float32]:
@@ -218,9 +223,9 @@ class PlutoPlanner(AbstractPlanner):
                 self._scenario_manager.get_cached_reference_lines(), ego_state
             ),
         )
-
+        # self._learning_based_score_weight = 1
         final_scores = (
-            rule_based_scores + self._learning_based_score_weight * learning_based_score
+            1*rule_based_scores + self._learning_based_score_weight * learning_based_score
         )
 
         best_candidate_idx = final_scores.argmax()
@@ -245,8 +250,7 @@ class PlutoPlanner(AbstractPlanner):
             )
 
         if self._render:
-            self._imgs.append(
-                self._scene_render.render_from_simulation(
+            image_now = self._scene_render.render_from_simulation(
                     current_input=current_input,
                     initialization=self._initialization,
                     route_roadblock_ids=self._scenario_manager.get_route_roadblock_ids(),
@@ -260,8 +264,17 @@ class PlutoPlanner(AbstractPlanner):
                     predictions=predictions,
                     return_img=True,
                 )
-            )
+            self._imgs.append(image_now)
 
+            # if debug_mode, show the image
+            debug_mode = False
+            if debug_mode:
+                import matplotlib.pyplot as plt
+                plt.figure(dpi=1200)
+                plt.imshow(image_now)
+                plt.axis('off') 
+                plt.show()
+        
         return trajectory
 
     def _trim_candidates(
@@ -436,12 +449,23 @@ class PlutoPlanner(AbstractPlanner):
         if self._render:
             import imageio
 
+            # Save video
+            self.video_dir = self.video_dir / self._challenge_mode
+            self.video_dir.mkdir(exist_ok=True, parents=True)
             imageio.mimsave(
                 self.video_dir
                 / f"{self._scenario.log_name}_{self._scenario.token}.mp4",
                 self._imgs,
                 fps=10,
             )
-            print("\n video saved to ", self.video_dir / "video.mp4\n")
-
+            print("\n video saved to ", self.video_dir / f"{self._scenario.log_name}_{self._scenario.token}.mp4\n")
+            # Save images
+            self.images_dir = self.images_dir / self._challenge_mode
+            self.images_dir.mkdir(exist_ok=True, parents=True)
+            for i, img in enumerate(self._imgs):
+                imageio.imwrite(
+                    self.images_dir
+                    / f"{self._scenario.log_name}_{self._scenario.token}_{i}.png",
+                    img,
+                )
         return report

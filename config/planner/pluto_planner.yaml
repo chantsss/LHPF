@@ -8,7 +8,8 @@ pluto_planner:
   candidate_subsample_ratio: 1.0
   candidate_min_num: 10
   learning_based_score_weight: 0.3
-
+  challenge_mode: 
+  
   planner:
     _target_: src.models.pluto.pluto_model.PlanningModel
     _convert_: "all"
@@ -28,9 +29,7 @@ pluto_planner:
     state_dropout: 0.75
     use_ego_history: false
     state_attn_encoder: true
-    use_hidden_proj: true
-    cat_x: true
-    ref_free_traj: true
+    use_hidden_proj: false
 
     feature_builder:
       _target_: src.feature_builders.pluto_feature_builder.PlutoFeatureBuilder

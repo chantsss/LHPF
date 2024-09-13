@@ -7,10 +7,12 @@ FILTER=$3
 CKPT=$4
 VIDEO_SAVE_DIR=$5
 
-CHALLENGE="closed_loop_nonreactive_agents"
+# CHALLENGE="closed_loop_nonreactive_agents"
 # CHALLENGE="closed_loop_reactive_agents"
 # CHALLENGE="open_loop_boxes"
 
+for CHALLENGE in "open_loop_boxes" "closed_loop_nonreactive_agents" "closed_loop_reactive_agents"
+do 
 python run_simulation.py \
     +simulation=$CHALLENGE \
     planner=$PLANNER \
@@ -22,4 +24,4 @@ python run_simulation.py \
     planner.pluto_planner.render=true \
     planner.pluto_planner.planner_ckpt="$CKPT_ROOT/$CKPT" \
     +planner.pluto_planner.save_dir=$VIDEO_SAVE_DIR
-
+done
