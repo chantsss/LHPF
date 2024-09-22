@@ -257,7 +257,7 @@ class PlanningModel(TorchModuleWrapper):
 
         prediction = self.agent_predictor(x[:, -1, 1:A])
 
-        ref_line_available = data["reference_line"]["position"].shape[1] > 0
+        ref_line_available = data["reference_line"]["position"].shape[2] > 0
 
         if ref_line_available:
             trajectory, probability = self.planning_decoder(
