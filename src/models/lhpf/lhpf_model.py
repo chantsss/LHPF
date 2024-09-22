@@ -71,8 +71,8 @@ class PlanningModel(TorchModuleWrapper):
             self.select_indices = torch.tensor(self.select_indices, dtype=torch.long)
         else:
             self.select_indices = torch.tensor([19], dtype=torch.long)
-
-
+        self.compliant_length = torch.tensor([70], dtype=torch.long)
+        self.compliant_loss_decay_weights = torch.nn.Parameter(0.9 ** torch.arange(int(self.compliant_length)), requires_grad=False).unsqueeze(-1)
 
         self.pos_emb = FourierEmbedding(3, dim, 64)
 
