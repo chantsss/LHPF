@@ -11,7 +11,9 @@ VIDEO_SAVE_DIR=$5
 # CHALLENGE="closed_loop_reactive_agents"
 # CHALLENGE="open_loop_boxes"
 
-for CHALLENGE in "open_loop_boxes" "closed_loop_nonreactive_agents" "closed_loop_reactive_agents"
+# for CHALLENGE in "open_loop_boxes" "closed_loop_nonreactive_agents" "closed_loop_reactive_agents"
+for CHALLENGE in "closed_loop_reactive_agents"
+
 do 
 python run_simulation.py \
     +simulation=$CHALLENGE \
