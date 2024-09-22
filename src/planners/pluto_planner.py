@@ -223,9 +223,10 @@ class PlutoPlanner(AbstractPlanner):
                 self._scenario_manager.get_cached_reference_lines(), ego_state
             ),
         )
-        # self._learning_based_score_weight = 1
+        self._learning_based_score_weight = 0
+        rule_based_score_weight = 1
         final_scores = (
-            1*rule_based_scores + self._learning_based_score_weight * learning_based_score
+            rule_based_score_weight * rule_based_scores + self._learning_based_score_weight * learning_based_score
         )
 
         best_candidate_idx = final_scores.argmax()
