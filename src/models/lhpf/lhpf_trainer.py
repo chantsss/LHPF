@@ -19,6 +19,7 @@ from src.metrics import MR, minADE, minFDE
 from src.metrics.prediction_avg_ade import PredAvgADE
 from src.metrics.prediction_avg_fde import PredAvgFDE
 from src.optim.warmup_cos_lr import WarmupCosLR
+from scipy.optimize import linear_sum_assignment
 
 from .loss.esdf_collision_loss import ESDFCollisionLoss
 
@@ -35,8 +36,10 @@ class LightningTrainer(pl.LightningModule):
         warmup_epochs,
         use_collision_loss=True,
         use_contrast_loss=False,
+        use_compliant_loss=True,
         regulate_yaw=False,
         objective_aggregate_mode: str = "mean",
+        compliant_loss_weight: float = 1,
     ) -> None:
         """
         Initializes the class.
@@ -63,7 +66,12 @@ class LightningTrainer(pl.LightningModule):
         self.use_collision_loss = use_collision_loss
         self.use_contrast_loss = use_contrast_loss
         self.regulate_yaw = regulate_yaw
-
+        self.use_compliant_loss = use_compliant_loss
+        if self.use_compliant_loss:
+            self.compliant_loss_weight = compliant_loss_weight
+            self.compliant_length = self.model.compliant_length
+            self.compliant_loss_decay_weights = self.model.compliant_loss_decay_weights.unsqueeze(-1)
+            
         self.radius = model.radius
         self.num_modes = model.num_modes
         self.mode_interval = self.radius / self.num_modes
@@ -149,17 +157,21 @@ class LightningTrainer(pl.LightningModule):
         ego_target_all_mask = ego_target_all_mask.index_select(1, res["select_indices"]-1)
 
         # planning loss
-        ego_reg_loss, ego_cls_loss, collision_loss = self.get_planning_loss(
+        ego_reg_loss, ego_cls_loss, collision_loss, best_trajectory_curr = self.get_planning_loss(
             data, trajectory[:, -1], probability[:, -1], ego_target_all_mask[:, -1], ego_target_all[:, -1], train_num
         )
 
         # history prediction reg loss
-        his_prediction_reg_loss, his_prediction_cls_loss = self.get_his_prediction_loss(
+        his_prediction_reg_loss, his_prediction_cls_loss, best_trajectory_his = self.get_his_prediction_loss(
             data, trajectory[:, :-1], probability[:, :-1], ego_target_all_mask[:, :-1], ego_target_all[:, :-1], train_num
         )
 
+        compliant_loss = 0
+        if self.use_compliant_loss and R > 0:
         # # compliant loss between history prediction and planning
-        # compliant_loss = self.get_his_current_compliant_loss()
+            # current_best_pred = best_trajectory_curr
+            # his_best_pred = best_trajectory_his[-1]
+            compliant_loss = self.compliant_loss_weight * self.get_his_current_compliant_loss(trajectory)
 
         if ref_free_trajectory is not None:
             ego_ref_free_reg_loss = F.smooth_l1_loss(
@@ -194,6 +206,7 @@ class LightningTrainer(pl.LightningModule):
             + ego_ref_free_reg_loss
             + his_prediction_reg_loss
             + his_prediction_cls_loss
+            + compliant_loss
         )
 
         return {
@@ -206,6 +219,7 @@ class LightningTrainer(pl.LightningModule):
             "contrastive_loss": contrastive_loss.item(),
             "his_prediction_reg_loss": his_prediction_reg_loss.item() if self.model.use_history_attention else 0,
             "his_prediction_cls_loss": his_prediction_cls_loss.item() if self.model.use_history_attention else 0,
+            "compliant_loss": compliant_loss.item() if isinstance(compliant_loss, torch.Tensor) else 0
         }
 
     def get_prediction_loss(self, prediction, valid_mask, target):
@@ -269,7 +283,19 @@ class LightningTrainer(pl.LightningModule):
             )
             reg_loss += yaw_regularization_loss
 
-        return reg_loss, cls_loss, collision_loss
+        return reg_loss, cls_loss, collision_loss, best_trajectory
+
+    def get_his_current_compliant_loss(self, trajectory):
+
+        # compliant_loss = F.smooth_l1_loss(best_current_pred[:, :30], \
+        #     best_his_pred[:, 10:40], reduction="none").sum(-1) * self.compliant_loss_decay_weights.to(best_current_pred.device)
+        # current_pred = trajectory[:, -1, :, :, :self.compliant_length]
+        # his_pred = trajectory[:, -2, :, :, 10 : self.compliant_length + 10]
+        current_pred = trajectory[:, -1]
+        his_pred = trajectory[:, -2]
+        matches, compliant_loss = bidirectional_matching(current_pred, his_pred, self.compliant_loss_decay_weights, self.compliant_length)
+
+        return compliant_loss
 
     def get_his_prediction_loss(self, data, trajectory, probability, valid_mask, target, bs):
         """
@@ -284,6 +310,7 @@ class LightningTrainer(pl.LightningModule):
 
         reg_loss_all = 0
         cls_loss_all = 0
+        best_trajectory_list = []
 
         for i in range(Th):
 
@@ -330,11 +357,12 @@ class LightningTrainer(pl.LightningModule):
             
             reg_loss_all += reg_loss
             cls_loss_all += cls_loss
+            best_trajectory_list.append(best_trajectory)
         
         reg_loss = reg_loss_all / Th
         cls_loss = cls_loss_all / Th
 
-        return reg_loss, cls_loss
+        return reg_loss, cls_loss, best_trajectory_list
 
     def _compute_contrastive_loss(
         self, hidden, valid_mask, normalize=True, tempreture=0.1
@@ -581,3 +609,97 @@ def generate_target(position: torch.Tensor, mask: torch.Tensor, num_historical_s
         heading = targets_pos[:,0,i+1:i+1+num_future_steps,2] - targets_pos[:,0,i,2].unsqueeze(1)
         target_traj[:,i,:,2:4] = torch.stack([heading.cos(), heading.sin()], dim=-1)
     return target_traj, target_mask
+
+def greedy_linear_sum_assignment(cost_matrix):
+    """
+    一个简化的、基于贪心算法的匹配方法。
+    注意：这不保证找到最优解。
+    
+    参数:
+    - cost_matrix: 一个形状为 (n, m) 的成本矩阵，其中 n 是行数，m 是列数。
+    
+    返回:
+    - rows: 匹配行的列表。
+    - cols: 匹配列的列表。
+    """
+    n, m = cost_matrix.shape
+    matched_rows = set()
+    matched_cols = set()
+    rows = []
+    cols = []
+    
+    while len(matched_rows) < n and len(matched_cols) < m:
+        # 找到当前成本矩阵中的最小值，首先将成本矩阵重塑为一维张量
+        min_val, min_idx = torch.min(cost_matrix.view(-1), dim=0)
+        # 根据一维张量中的索引计算原始成本矩阵的行和列索引
+        i, j = divmod(min_idx.item(), m)
+        
+        # 如果行和列都还没有被匹配，则选择它们作为一个匹配对
+        if i not in matched_rows and j not in matched_cols:
+            matched_rows.add(i)
+            matched_cols.add(j)
+            rows.append(i)
+            cols.append(j)
+        
+        # 将已经选择的行和列的成本设置为一个很大的值，以确保它们不会再次被选中
+        cost_matrix[i, :] = torch.inf
+        cost_matrix[:, j] = torch.inf
+    
+    return rows, cols
+
+def calculate_cost_matrix(tracks_current, tracks_next):
+    # 使用torch.cdist计算成本矩阵
+    cost_matrix = torch.cdist(tracks_current[:, :, :, -1, :2], tracks_next[:, :, :, 0, :2])
+    return cost_matrix
+
+def huber_loss(delta, c=1.0):
+    # 使用torch.where计算Huber损失
+    return torch.where(torch.abs(delta) < c, 0.5 * delta**2, c * (torch.abs(delta) - 0.5 * c))
+
+def bidirectional_matching(tracks_current, tracks_next, compliant_loss_decay_weights, compliant_length):
+    match_deltas = []  # 存储所有匹配对的delta值
+    
+    batch_size, reference_line_num, mode_num, traj_length, traj_dim = tracks_current.shape
+    
+    # 初始化总一致性损失
+    total_consistency_loss = torch.tensor(0.0, device=tracks_current.device)
+    cost_matrix_forward = calculate_cost_matrix(tracks_current, tracks_next).cpu().detach().numpy()
+    cost_matrix_backward = calculate_cost_matrix(tracks_next, tracks_current).cpu().detach().numpy()
+    compliant_loss_decay_weights = compliant_loss_decay_weights.to(tracks_current.device)
+    for b in range(batch_size):
+        for ref_line in range(reference_line_num):
+            # tracks_current_ref = tracks_current[b, ref_line, :]
+            # tracks_next_ref = tracks_next[b, ref_line, :]
+            
+            # 将tensor转换为numpy进行匈牙利算法计算，这部分当前不易并行化
+            forward_matches = linear_sum_assignment(cost_matrix_forward[b, ref_line])
+            backward_matches = linear_sum_assignment(cost_matrix_backward[b, ref_line])
+            
+            forward_matches = list(zip(forward_matches[0], forward_matches[1]))
+            backward_matches = list(zip(backward_matches[1], backward_matches[0]))
+            
+            bidirectional_matches = [match for match in forward_matches if match in backward_matches]
+            # 计算每个匹配对的成本并进行排序
+            cost_matrix_forward_now = cost_matrix_forward[b, ref_line]
+            match_costs = [(match, cost_matrix_forward_now[match[0], match[1]]) for match in bidirectional_matches]
+            # print("match_costs are", match_costs)
+            sorted_matches = sorted(match_costs, key=lambda x: x[1])
+
+            # 选取成本最低的前3个匹配对
+            top_matches = sorted_matches[:3]            
+            match_deltas = match_deltas + top_matches
+
+            # for i, j in bidirectional_matches:
+            for match, _ in top_matches:
+                i, j = match
+                # delta = tracks_next[b, ref_line, j, 10: compliant_length + 10, :] - tracks_current[b, ref_line, i, :compliant_length, :]
+                delta_x = tracks_next[b, ref_line, j, 10: compliant_length + 10, 0] - tracks_current[b, ref_line, i, :compliant_length, 0]
+                delta_y = tracks_next[b, ref_line, j, 10: compliant_length + 10, 1] - tracks_current[b, ref_line, i, :compliant_length, 1]
+                total_consistency_loss += (compliant_loss_decay_weights * (huber_loss(delta_x) + huber_loss(delta_y))).sum()
+                # total_consistency_loss += (compliant_loss_decay_weights * huber_loss(delta)).sum()
+                # total_consistency_loss += (huber_loss(delta)).sum()
+
+    if len(match_deltas) > 0:
+        total_consistency_loss /= len(match_deltas)
+
+    return len(match_deltas), total_consistency_loss

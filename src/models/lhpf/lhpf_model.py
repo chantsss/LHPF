@@ -71,8 +71,8 @@ class PlanningModel(TorchModuleWrapper):
             self.select_indices = torch.tensor(self.select_indices, dtype=torch.long)
         else:
             self.select_indices = torch.tensor([19], dtype=torch.long)
-
-
+        self.compliant_length = torch.tensor([70], dtype=torch.long)
+        self.compliant_loss_decay_weights = torch.nn.Parameter(0.9 ** torch.arange(int(self.compliant_length)), requires_grad=False).unsqueeze(-1)
 
         self.pos_emb = FourierEmbedding(3, dim, 64)
 
@@ -257,7 +257,7 @@ class PlanningModel(TorchModuleWrapper):
 
         prediction = self.agent_predictor(x[:, -1, 1:A])
 
-        ref_line_available = data["reference_line"]["position"].shape[1] > 0
+        ref_line_available = data["reference_line"]["position"].shape[2] > 0
 
         if ref_line_available:
             trajectory, probability = self.planning_decoder(
