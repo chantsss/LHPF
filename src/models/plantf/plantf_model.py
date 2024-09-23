@@ -38,6 +38,8 @@ class PlanningModel(TorchModuleWrapper):
         use_ego_history=False,
         state_attn_encoder=True,
         state_dropout=0.75,
+        use_history_attention=False,
+        use_history_attention_intervals=1,
         feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder(),
     ) -> None:
         super().__init__(
@@ -49,6 +51,16 @@ class PlanningModel(TorchModuleWrapper):
         self.dim = dim
         self.history_steps = history_steps
         self.future_steps = future_steps
+
+        self.use_history_attention = use_history_attention
+        self.use_history_attention_intervals = use_history_attention_intervals
+        if self.use_history_attention:
+            self.select_indices = list(range(self.history_steps - 1, 0, -self.use_history_attention_intervals))
+            self.select_indices.reverse() 
+            self.select_indices = torch.tensor(self.select_indices, dtype=torch.long)
+        else:
+            self.select_indices = torch.tensor([19], dtype=torch.long)
+
 
         self.pos_emb = FourierEmbedding(3, dim, 64)
         self.agent_encoder = AgentEncoder(
@@ -67,7 +79,7 @@ class PlanningModel(TorchModuleWrapper):
             polygon_channel=polygon_channel,
             use_lane_boundary=True,
         )
-        
+
         self.static_objects_encoder = StaticObjectsEncoder(dim=dim)
 
         self.encoder_blocks = nn.ModuleList(
@@ -80,7 +92,7 @@ class PlanningModel(TorchModuleWrapper):
             embed_dim=dim,
             num_modes=num_modes,
             future_steps=future_steps,
-            out_channels=4,
+            out_channels=6,
         )
         self.agent_predictor = AgentPredictor(dim=dim, future_steps=future_steps)
 
@@ -101,67 +113,213 @@ class PlanningModel(TorchModuleWrapper):
             nn.init.normal_(m.weight, mean=0.0, std=0.02)
 
     def forward(self, data):
-        agent_pos = data["agent"]["position"][:, :, self.history_steps - 1]
-        agent_heading = data["agent"]["heading"][:, :, self.history_steps - 1]
-        agent_mask = data["agent"]["valid_mask"][:, :, : self.history_steps]
-        polygon_center = data["map"]["polygon_center"]
-        polygon_mask = data["map"]["valid_mask"]
+        if self.use_history_attention:
+            data = self.generate_his_features(data)
+            self.select_indices = self.select_indices.to(data["agent"]["position"].device)
+            x_agent = self.agent_encoder(data, self.select_indices)
+            bs, used_T, A = x_agent.shape[:3] 
+            x_polygon = self.map_encoder(data, used_T)
+            x_static, static_pos, static_key_padding = self.static_objects_encoder(data)
 
-        bs, A = agent_pos.shape[0:2]
+            agent_pos = data["agent"]["position"][:, :, :, self.history_steps - 1]
+            agent_heading = data["agent"]["heading"][:, :, :, self.history_steps - 1]
+            agent_mask = data["agent"]["valid_mask"][:, :, :, :self.history_steps]
+            polygon_center = data["map"]["polygon_center"]
+            polygon_mask = data["map"]["valid_mask"]
 
-        position = torch.cat([agent_pos, polygon_center[..., :2]], dim=1)
-        angle = torch.cat([agent_heading, polygon_center[..., 2]], dim=1)
-        angle = (angle + math.pi) % (2 * math.pi) - math.pi
-        pos = torch.cat([position, angle.unsqueeze(-1)], dim=-1)
+            position = torch.cat([agent_pos, polygon_center[..., :2]], dim=2)
+            angle = torch.cat([agent_heading, polygon_center[..., 2]], dim=2)
+            angle = (angle + math.pi) % (2 * math.pi) - math.pi
+            pos = torch.cat([position, angle.unsqueeze(-1)], dim=-1)
 
-        agent_key_padding = ~(agent_mask.any(-1))
-        polygon_key_padding = ~(polygon_mask.any(-1))
-        key_padding_mask = torch.cat([agent_key_padding, polygon_key_padding], dim=-1)
+            agent_key_padding = ~(agent_mask.any(-1))
+            polygon_key_padding = ~(polygon_mask.any(-1))
+            key_padding_mask = torch.cat([agent_key_padding, polygon_key_padding], dim=-1)
+            
+            x = torch.cat([x_agent, x_polygon, x_static], dim=2)
 
-        x_agent = self.agent_encoder(data)
-        x_polygon = self.map_encoder(data)
-        x_static, static_pos, static_key_padding = self.static_objects_encoder(data)
+            pos = torch.cat([pos, static_pos], dim=2)
+            pos_embed = self.pos_emb(pos)
 
-        x = torch.cat([x_agent, x_polygon, x_static], dim=1)
+            key_padding_mask = torch.cat([key_padding_mask, static_key_padding], dim=-1)
+            x = x + pos_embed
+            x = x.reshape(bs*used_T, -1, self.dim)
+            key_padding_mask = key_padding_mask.reshape(bs*used_T, -1)
+            for blk in self.encoder_blocks:
+                x = blk(x, key_padding_mask=key_padding_mask)
+            x = self.norm(x)
 
-        pos = torch.cat([pos, static_pos], dim=1)
-        pos_embed = self.pos_emb(pos)
+            x = x.reshape(bs, used_T, -1, self.dim)
 
-        key_padding_mask = torch.cat([key_padding_mask, static_key_padding], dim=-1)
-        x = x + pos_embed
+            prediction = self.agent_predictor(x[:, -1, 1:A])
+            trajectory, probability = self.trajectory_decoder(x[:, :, 0])
+            probability_now = probability[:, -1]
+            trajectory_now = trajectory[:, -1]
+            out = {
+                "trajectory": trajectory_now,
+                "probability": probability_now,  # (bs, R, M)
+                "prediction": prediction,  # (bs, A-1, T, 2)
+                "trajectory_all_time": trajectory,
+                "probability_all_time": probability,
+                "select_indices": self.select_indices,
+            }
+            if not self.training:
+                output_prediction = torch.cat(
+                    [
+                        prediction[..., :2] + agent_pos[:, -1, 1:A, None],
+                        torch.atan2(prediction[..., 3], prediction[..., 2]).unsqueeze(-1)
+                        + agent_heading[:, -1, 1:A,  None, None],
+                        prediction[..., 4:6],
+                    ],
+                    dim=-1,
+                )
+                out["output_prediction"] = output_prediction
+                angle = torch.atan2(trajectory[:, -1, ..., 3], trajectory[:, -1, ..., 2])
+                out_trajectory = torch.cat(
+                    [trajectory[:, -1, ..., :2], angle.unsqueeze(-1)], dim=-1
+                )
+                best_mode = probability[:, -1].argmax(dim=-1)
+                best_trajectory = trajectory[:, -1][torch.arange(bs), best_mode]
+                out["output_trajectory"] = best_trajectory
+                out["candidate_trajectories"] = out_trajectory
 
-        for blk in self.encoder_blocks:
-            x = blk(x, key_padding_mask=key_padding_mask)
-        x = self.norm(x)
+        else:
+            agent_pos = data["agent"]["position"][:, :, self.history_steps - 1]
+            agent_heading = data["agent"]["heading"][:, :, self.history_steps - 1]
+            agent_mask = data["agent"]["valid_mask"][:, :, : self.history_steps]
+            polygon_center = data["map"]["polygon_center"]
+            polygon_mask = data["map"]["valid_mask"]
 
-        trajectory, probability = self.trajectory_decoder(x[:, 0])
-        prediction = self.agent_predictor(x[:, 1:A])
+            bs, A = agent_pos.shape[0:2]
 
-        out = {
-            "trajectory": trajectory,
-            "probability": probability,
-            "prediction": prediction,
-        }
+            position = torch.cat([agent_pos, polygon_center[..., :2]], dim=1)
+            angle = torch.cat([agent_heading, polygon_center[..., 2]], dim=1)
+            angle = (angle + math.pi) % (2 * math.pi) - math.pi
+            pos = torch.cat([position, angle.unsqueeze(-1)], dim=-1)
 
-        if not self.training:
-            output_prediction = torch.cat(
-                [
-                    prediction[..., :2] + agent_pos[:, 1:A, None],
-                    torch.atan2(prediction[..., 3], prediction[..., 2]).unsqueeze(-1)
-                    + agent_heading[:, 1:A, None, None],
-                    prediction[..., 4:6],
-                ],
-                dim=-1,
-            )
-            out["output_prediction"] = output_prediction
+            agent_key_padding = ~(agent_mask.any(-1))
+            polygon_key_padding = ~(polygon_mask.any(-1))
+            key_padding_mask = torch.cat([agent_key_padding, polygon_key_padding], dim=-1)
 
-            angle = torch.atan2(trajectory[..., 3], trajectory[..., 2])
-            out_trajectory = torch.cat(
-                [trajectory[..., :2], angle.unsqueeze(-1)], dim=-1
-            )
-            best_mode = probability.argmax(dim=-1)
-            best_trajectory = trajectory[torch.arange(bs), best_mode]
-            out["output_trajectory"] = best_trajectory
-            out["candidate_trajectories"] = out_trajectory
+            x_agent = self.agent_encoder(data)
+            x_polygon = self.map_encoder(data)
+            x_static, static_pos, static_key_padding = self.static_objects_encoder(data)
+
+            x = torch.cat([x_agent, x_polygon, x_static], dim=1)
+
+            pos = torch.cat([pos, static_pos], dim=1)
+            pos_embed = self.pos_emb(pos)
+
+            key_padding_mask = torch.cat([key_padding_mask, static_key_padding], dim=-1)
+            x = x + pos_embed
+
+            for blk in self.encoder_blocks:
+                x = blk(x, key_padding_mask=key_padding_mask)
+            x = self.norm(x)
+
+            trajectory, probability = self.trajectory_decoder(x[:, 0])
+            prediction = self.agent_predictor(x[:, 1:A])
+
+            out = {
+                "trajectory": trajectory,
+                "probability": probability,
+                "prediction": prediction,
+            }
+
+            if not self.training:
+                output_prediction = torch.cat(
+                    [
+                        prediction[..., :2] + agent_pos[:, 1:A, None],
+                        torch.atan2(prediction[..., 3], prediction[..., 2]).unsqueeze(-1)
+                        + agent_heading[:, 1:A, None, None],
+                        prediction[..., 4:6],
+                    ],
+                    dim=-1,
+                )
+                out["output_prediction"] = output_prediction
+
+                angle = torch.atan2(trajectory[..., 3], trajectory[..., 2])
+                out_trajectory = torch.cat(
+                    [trajectory[..., :2], angle.unsqueeze(-1)], dim=-1
+                )
+                best_mode = probability.argmax(dim=-1)
+                best_trajectory = trajectory[torch.arange(bs), best_mode]
+                out["output_trajectory"] = best_trajectory
+                out["candidate_trajectories"] = out_trajectory
 
         return out
+
+    def generate_his_features(self, data):
+        used_T = len(self.select_indices)
+        # current_states = data["agent"]["position"][:, 0, self.select_indices]
+        # center_angles = data["agent"]["heading"][:, 0, self.select_indices]
+        # center_xy, center_angle = current_states[:2].copy(), center_angles.copy()
+
+        data["agent"]["position"] = data["agent"]["position"].unsqueeze(1).repeat(1, used_T, 1, 1, 1)
+        data["agent"]["velocity"] = data["agent"]["velocity"].unsqueeze(1).repeat(1, used_T, 1, 1, 1)
+        data["agent"]["heading"] = data["agent"]["heading"].unsqueeze(1).repeat(1, used_T, 1, 1)
+        data["agent"]["shape"] = data["agent"]["shape"].unsqueeze(1).repeat(1, used_T, 1, 1, 1)
+        data["agent"]["category"] = data["agent"]["category"].unsqueeze(1).repeat(1, used_T, 1)
+        data["agent"]["valid_mask"] = data["agent"]["valid_mask"].unsqueeze(1).repeat(1, used_T, 1, 1)
+
+        data["map"]["point_position"] = data["map"]["point_position"].unsqueeze(1).repeat(1, used_T, 1, 1, 1, 1)
+        data["map"]["point_vector"] = data["map"]["point_vector"].unsqueeze(1).repeat(1, used_T, 1, 1, 1, 1)
+        data["map"]["point_orientation"] = data["map"]["point_orientation"].unsqueeze(1).repeat(1, used_T, 1, 1, 1)
+        data["current_state"] = data["current_state"].unsqueeze(1).repeat(1, used_T, 1)
+        data["map"]["polygon_center"] = data["map"]["polygon_center"].unsqueeze(1).repeat(1, used_T, 1, 1)
+        data["map"]["polygon_position"] = data["map"]["polygon_position"].unsqueeze(1).repeat(1, used_T, 1, 1)
+        data["map"]["polygon_orientation"] = data["map"]["polygon_orientation"].unsqueeze(1).repeat(1, used_T, 1)
+        data["map"]["valid_mask"] = data["map"]["valid_mask"].unsqueeze(1).repeat(1, used_T, 1, 1)
+
+        data["static_objects"]["position"] = data["static_objects"]["position"].unsqueeze(1).repeat(1, used_T, 1, 1)
+        data["static_objects"]["heading"] = data["static_objects"]["heading"].unsqueeze(1).repeat(1, used_T, 1)
+        data["static_objects"]["category"] = data["static_objects"]["category"].unsqueeze(1).repeat(1, used_T, 1)
+        data["static_objects"]["valid_mask"] = data["static_objects"]["valid_mask"].unsqueeze(1).repeat(1, used_T, 1)
+        data["static_objects"]["shape"] = data["static_objects"]["shape"].unsqueeze(1).repeat(1, used_T, 1, 1)
+
+        data["reference_line"]["position"] = data["reference_line"]["position"].unsqueeze(1).repeat(1, used_T, 1, 1, 1)
+        data["reference_line"]["vector"] = data["reference_line"]["vector"].unsqueeze(1).repeat(1, used_T, 1, 1, 1)
+        data["reference_line"]["orientation"] = data["reference_line"]["orientation"].unsqueeze(1).repeat(1, used_T, 1, 1)
+        data["reference_line"]["valid_mask"] = data["reference_line"]["valid_mask"].unsqueeze(1).repeat(1, used_T, 1, 1)
+
+        for i, index in enumerate(self.select_indices):
+
+            cur_state = data["agent"]["position"][:, i, 0, index]
+            center_angle = data["agent"]["heading"][:, i, 0, index]
+            center_xy, center_angle = cur_state[:, :2].clone().unsqueeze(1).unsqueeze(1),\
+                                        center_angle.clone().unsqueeze(1).unsqueeze(1)
+
+            rotate_mat = torch.stack([
+                torch.cos(center_angle), -torch.sin(center_angle),
+                torch.sin(center_angle), torch.cos(center_angle)
+            ], dim=1).reshape(-1, 2, 2).unsqueeze(1)
+
+            data["current_state"][:, i, :3] = 0
+            data["agent"]["position"][:, i] = torch.matmul(
+                data["agent"]["position"][:, i] - center_xy, rotate_mat
+            )
+            data["agent"]["velocity"][:, i] = torch.matmul(data["agent"]["velocity"][:, i], rotate_mat)
+            data["agent"]["heading"][:, i] -= center_angle
+
+            data["map"]["point_position"][:, i] = torch.matmul(
+                data["map"]["point_position"][:, i] - center_xy.unsqueeze(1), rotate_mat.unsqueeze(1)
+            )
+            data["map"]["point_vector"][:, i] = torch.matmul(data["map"]["point_vector"][:, i], rotate_mat.unsqueeze(1))
+            data["map"]["point_orientation"][:, i] -= center_angle.unsqueeze(1)
+
+            data["map"]["polygon_center"][:, i, ..., :2] = torch.matmul(
+                data["map"]["polygon_center"][:, i, ..., :2] - center_xy.squeeze(1), rotate_mat.squeeze(1)
+            )
+            data["map"]["polygon_center"][:, i, ..., 2] = data["map"]["polygon_center"][:, i, ..., 2] - center_angle.squeeze(1)
+            data["map"]["polygon_position"][:, i] = torch.matmul(
+                data["map"]["polygon_position"][:, i] - center_xy.squeeze(1), rotate_mat.squeeze(1)
+            )
+            data["map"]["polygon_orientation"][:, i] -= center_angle.squeeze(1)
+
+            data["static_objects"]["position"][:, i] = torch.matmul(
+                data["static_objects"]["position"][:, i] - center_xy.squeeze(1), rotate_mat.squeeze(1)
+            )
+            data["static_objects"]["heading"][:, i] -= center_angle.squeeze(1)
+
+
+        return data
