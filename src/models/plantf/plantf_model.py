@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
@@ -15,6 +16,7 @@ from .modules.map_encoder import MapEncoder
 from .modules.static_objects_encoder import StaticObjectsEncoder
 from .modules.trajectory_decoder import TrajectoryDecoder
 from .modules.agent_predictor import AgentPredictor
+from .layers.embedding import FourierEmbedding
 
 # no meaning, required by nuplan
 trajectory_sampling = TrajectorySampling(num_poses=8, time_horizon=8, interval_length=1)
@@ -48,7 +50,7 @@ class PlanningModel(TorchModuleWrapper):
         self.history_steps = history_steps
         self.future_steps = future_steps
 
-        self.pos_emb = build_mlp(4, [dim] * 2)
+        self.pos_emb = FourierEmbedding(3, dim, 64)
         self.agent_encoder = AgentEncoder(
             state_channel=state_channel,
             history_channel=history_channel,
@@ -63,7 +65,10 @@ class PlanningModel(TorchModuleWrapper):
         self.map_encoder = MapEncoder(
             dim=dim,
             polygon_channel=polygon_channel,
+            use_lane_boundary=True,
         )
+        
+        self.static_objects_encoder = StaticObjectsEncoder(dim=dim)
 
         self.encoder_blocks = nn.ModuleList(
             TransformerEncoderLayer(dim=dim, num_heads=num_heads, drop_path=dp)
@@ -106,10 +111,8 @@ class PlanningModel(TorchModuleWrapper):
 
         position = torch.cat([agent_pos, polygon_center[..., :2]], dim=1)
         angle = torch.cat([agent_heading, polygon_center[..., 2]], dim=1)
-        pos = torch.cat(
-            [position, torch.stack([angle.cos(), angle.sin()], dim=-1)], dim=-1
-        )
-        pos_embed = self.pos_emb(pos)
+        angle = (angle + math.pi) % (2 * math.pi) - math.pi
+        pos = torch.cat([position, angle.unsqueeze(-1)], dim=-1)
 
         agent_key_padding = ~(agent_mask.any(-1))
         polygon_key_padding = ~(polygon_mask.any(-1))
@@ -117,8 +120,15 @@ class PlanningModel(TorchModuleWrapper):
 
         x_agent = self.agent_encoder(data)
         x_polygon = self.map_encoder(data)
+        x_static, static_pos, static_key_padding = self.static_objects_encoder(data)
 
-        x = torch.cat([x_agent, x_polygon], dim=1) + pos_embed
+        x = torch.cat([x_agent, x_polygon, x_static], dim=1)
+
+        pos = torch.cat([pos, static_pos], dim=1)
+        pos_embed = self.pos_emb(pos)
+
+        key_padding_mask = torch.cat([key_padding_mask, static_key_padding], dim=-1)
+        x = x + pos_embed
 
         for blk in self.encoder_blocks:
             x = blk(x, key_padding_mask=key_padding_mask)

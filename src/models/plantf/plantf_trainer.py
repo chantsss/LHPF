@@ -19,6 +19,7 @@ from src.metrics import MR, minADE, minFDE
 from src.metrics.prediction_avg_ade import PredAvgADE
 from src.metrics.prediction_avg_fde import PredAvgFDE
 from src.optim.warmup_cos_lr import WarmupCosLR
+from .loss.esdf_collision_loss import ESDFCollisionLoss
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class LightningTrainer(pl.LightningModule):
         weight_decay,
         epochs,
         warmup_epochs,
-        use_collision_loss=False,
+        use_collision_loss=True,
         use_contrast_loss=False,
         regulate_yaw=False,
         objective_aggregate_mode: str = "mean",
@@ -48,6 +49,9 @@ class LightningTrainer(pl.LightningModule):
         self.use_collision_loss = use_collision_loss
         self.use_contrast_loss = use_contrast_loss
         self.regulate_yaw = regulate_yaw
+
+        if use_collision_loss:
+            self.collision_loss = ESDFCollisionLoss()
 
     def on_fit_start(self) -> None:
         metrics_collection = MetricCollection(
@@ -140,7 +144,7 @@ class LightningTrainer(pl.LightningModule):
         # collision loss
         if self.use_collision_loss:
             collision_loss = self.collision_loss(
-                best_trajectory, data["cost_maps"][:bs, :, :, 0].float()
+                best_traj, data["cost_maps"][:bs, :, :, 0].float()
             )
         else:
             collision_loss = trajectory.new_zeros(1)

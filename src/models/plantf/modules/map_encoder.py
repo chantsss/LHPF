@@ -1,22 +1,26 @@
 import torch
 import torch.nn as nn
 
-from ..layers.embedding import PointsEncoder
-
+from ..layers.embedding import PointsEncoder, FourierEmbedding
+# from ..layers.embedding import FourierEmbedding
 
 class MapEncoder(nn.Module):
     def __init__(
         self,
         polygon_channel=6,
         dim=128,
+        use_lane_boundary=False,
     ) -> None:
         super().__init__()
 
         self.dim = dim
-        self.polygon_encoder = PointsEncoder(polygon_channel, dim)
-        self.speed_limit_emb = nn.Sequential(
-            nn.Linear(1, dim), nn.ReLU(), nn.Linear(dim, dim)
+        self.use_lane_boundary = use_lane_boundary
+        self.polygon_channel = (
+            polygon_channel + 4 if use_lane_boundary else polygon_channel
         )
+
+        self.polygon_encoder = PointsEncoder(self.polygon_channel, dim)
+        self.speed_limit_emb = FourierEmbedding(1, dim, 64)
 
         self.type_emb = nn.Embedding(3, dim)
         self.on_route_emb = nn.Embedding(2, dim)
@@ -35,20 +39,38 @@ class MapEncoder(nn.Module):
         point_orientation = data["map"]["point_orientation"]
         valid_mask = data["map"]["valid_mask"]
 
-        polygon_feature = torch.cat(
-            [
-                point_position[:, :, 0] - polygon_center[..., None, :2],
-                point_vector[:, :, 0],
-                torch.stack(
-                    [
-                        point_orientation[:, :, 0].cos(),
-                        point_orientation[:, :, 0].sin(),
-                    ],
-                    dim=-1,
-                ),
-            ],
-            dim=-1,
-        )
+        if self.use_lane_boundary:
+            polygon_feature = torch.cat(
+                [
+                    point_position[:, :, 0] - polygon_center[..., None, :2],
+                    point_vector[:, :, 0],
+                    torch.stack(
+                        [
+                            point_orientation[:, :, 0].cos(),
+                            point_orientation[:, :, 0].sin(),
+                        ],
+                        dim=-1,
+                    ),
+                    point_position[:, :, 1] - point_position[:, :, 0],
+                    point_position[:, :, 2] - point_position[:, :, 0],
+                ],
+                dim=-1,
+            )
+        else:
+            polygon_feature = torch.cat(
+                [
+                    point_position[:, :, 0] - polygon_center[..., None, :2],
+                    point_vector[:, :, 0],
+                    torch.stack(
+                        [
+                            point_orientation[:, :, 0].cos(),
+                            point_orientation[:, :, 0].sin(),
+                        ],
+                        dim=-1,
+                    ),
+                ],
+                dim=-1,
+            )
 
         bs, M, P, C = polygon_feature.shape
         valid_mask = valid_mask.view(bs * M, P)
