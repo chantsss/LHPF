@@ -19,6 +19,7 @@ from src.metrics import MR, minADE, minFDE
 from src.metrics.prediction_avg_ade import PredAvgADE
 from src.metrics.prediction_avg_fde import PredAvgFDE
 from src.optim.warmup_cos_lr import WarmupCosLR
+from .loss.esdf_collision_loss import ESDFCollisionLoss
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,9 @@ class LightningTrainer(pl.LightningModule):
         self.use_contrast_loss = use_contrast_loss
         self.regulate_yaw = regulate_yaw
 
+        if use_collision_loss:
+            self.collision_loss = ESDFCollisionLoss()
+
     def on_fit_start(self) -> None:
         metrics_collection = MetricCollection(
             [
@@ -77,146 +81,235 @@ class LightningTrainer(pl.LightningModule):
         :return: model's scalar loss
         """
         features, targets, scenarios = batch
-        features["feature"].data["agent"]["target"] = features["feature"].data["agent"]["target"][..., self.history_steps:, :]
+        if not self.model.use_history_attention:
+            features["feature"].data["agent"]["target"] = features["feature"].data["agent"]["target"][..., self.history_steps:, :]
         res = self.forward(features["feature"].data)
         # print('prediction.shape', res['prediction'].shape)
         losses = self._compute_objectives(res, features["feature"].data)
+        if self.model.use_history_attention:
+            features["feature"].data["agent"]["target"] = features["feature"].data["agent"]["target"][..., self.history_steps:, :]
         metrics = self._compute_metrics(res, features["feature"].data, prefix)
         self._log_step(losses["loss"], losses, metrics, prefix)
 
         return losses["loss"] if self.training else 0.0
 
     def _compute_objectives(self, res, data) -> Dict[str, torch.Tensor]:
-        bs, _, T, _ = res["prediction"].shape
+
+        bs, _, _, _ = res["prediction"].shape
 
         if self.use_contrast_loss:
             train_num = (bs // 3) * 2 if self.training else bs
         else:
             train_num = bs
 
-        trajectory, probability, prediction = (
-            res["trajectory"][:train_num],
-            res["probability"][:train_num],
-            res["prediction"][:train_num],
-        )
-        ref_free_trajectory = res.get("ref_free_trajectory", None)
-
-        targets_pos = data["agent"]["target"][:train_num]
-        valid_mask = data["agent"]["valid_mask"][:train_num, :, -T:]
-        # targets_vel = data["agent"]["velocity"][:train_num, :, -T:]
-
-        targets = torch.cat(
-            [
-                targets_pos[..., :2],
-                torch.stack(
-                    [targets_pos[..., 2].cos(), targets_pos[..., 2].sin()], dim=-1
-                ),
-                # targets_vel,
-            ],
-            dim=-1,
-        )
-        ego_target, ego_valid_mask = targets[:, 0], valid_mask[:, 0]
-        agent_target, agent_valid_mask = targets[:, 1:], valid_mask[:, 1:]
-
-        # planning loss
-        ade = torch.norm(trajectory[..., :2] - ego_target[:, None, :, :2], dim=-1)
-        best_mode = torch.argmin(ade.sum(-1), dim=-1)
-        best_traj = trajectory[torch.arange(trajectory.shape[0]), best_mode]
-        ego_reg_loss = F.smooth_l1_loss(best_traj, ego_target)
-        ego_cls_loss = F.cross_entropy(probability, best_mode.detach())
-
-        if ref_free_trajectory is not None:
-            ego_ref_free_reg_loss = F.smooth_l1_loss(
-                ref_free_trajectory[:train_num],
-                target[:, 0, :, : ref_free_trajectory.shape[-1]],
-                reduction="none",
-            ).sum(-1)
-            ego_ref_free_reg_loss = (
-                ego_ref_free_reg_loss * valid_mask[:, 0]
-            ).sum() / valid_mask[:, 0].sum()
-        else:
-            ego_ref_free_reg_loss = ego_reg_loss.new_zeros(1)
-
-        # collision loss
-        if self.use_collision_loss:
-            collision_loss = self.collision_loss(
-                best_trajectory, data["cost_maps"][:bs, :, :, 0].float()
+        if not self.model.use_history_attention:
+            T = res["prediction"].shape[-2]
+            trajectory, probability, prediction = (
+                res["trajectory"][:train_num],
+                res["probability"][:train_num],
+                res["prediction"][:train_num],
             )
-        else:
-            collision_loss = trajectory.new_zeros(1)
+            ref_free_trajectory = res.get("ref_free_trajectory", None)
 
-        # prediction loss
+            targets_pos = data["agent"]["target"][:train_num]
+            valid_mask = data["agent"]["valid_mask"][:train_num, :, -T:]
+            targets_vel = data["agent"]["velocity"][:train_num, :, -T:]
+
+            targets = torch.cat(
+                [
+                    targets_pos[..., :2],
+                    torch.stack(
+                        [targets_pos[..., 2].cos(), targets_pos[..., 2].sin()], dim=-1
+                    ),
+                    targets_vel,
+                ],
+                dim=-1,
+            )
+            ego_target, ego_valid_mask = targets[:, 0], valid_mask[:, 0]
+            agent_target, agent_valid_mask = targets[:, 1:], valid_mask[:, 1:]
+
+            # planning loss
+            ade = torch.norm(trajectory[..., :2] - ego_target[:, None, :, :2], dim=-1)
+            best_mode = torch.argmin(ade.sum(-1), dim=-1)
+            best_traj = trajectory[torch.arange(trajectory.shape[0]), best_mode]
+            ego_reg_loss = F.smooth_l1_loss(best_traj, ego_target)
+            ego_cls_loss = F.cross_entropy(probability, best_mode.detach())
+
+            if ref_free_trajectory is not None:
+                ego_ref_free_reg_loss = F.smooth_l1_loss(
+                    ref_free_trajectory[:train_num],
+                    target[:, 0, :, : ref_free_trajectory.shape[-1]],
+                    reduction="none",
+                ).sum(-1)
+                ego_ref_free_reg_loss = (
+                    ego_ref_free_reg_loss * valid_mask[:, 0]
+                ).sum() / valid_mask[:, 0].sum()
+            else:
+                ego_ref_free_reg_loss = ego_reg_loss.new_zeros(1)
+
+            # collision loss
+            if self.use_collision_loss:
+                collision_loss = self.collision_loss(
+                    best_traj, data["cost_maps"][:bs, :, :, 0].float()
+                )
+            else:
+                collision_loss = trajectory.new_zeros(1)
+
+            # prediction loss
+            prediction_loss = F.smooth_l1_loss(
+                prediction[agent_valid_mask][..., :2], agent_target[agent_valid_mask][:, :2]
+            )
+
+            if self.training and self.use_contrast_loss:
+                contrastive_loss = self._compute_contrastive_loss(
+                    res["hidden"], data["data_n_valid_mask"]
+                )
+            else:
+                contrastive_loss = prediction_loss.new_zeros(1)
+
+            loss = (
+                ego_reg_loss
+                + ego_cls_loss
+                + prediction_loss
+                + contrastive_loss
+                + collision_loss
+                + ego_ref_free_reg_loss
+            )
+
+            return {
+                "loss": loss,
+                "reg_loss": ego_reg_loss.item(),
+                "cls_loss": ego_cls_loss.item(),
+                "ref_free_reg_loss": ego_ref_free_reg_loss.item(),
+                "collision_loss": collision_loss.item(),
+                "prediction_loss": prediction_loss.item(),
+                "contrastive_loss": contrastive_loss.item(),
+            }
+        
+        else:
+
+            trajectory, probability, prediction = (
+                res["trajectory_all_time"][:train_num],
+                res["probability_all_time"][:train_num],
+                res["prediction"][:train_num],
+            )
+            ref_free_trajectory = res.get("ref_free_trajectory", None)
+
+            targets_pos = data["agent"]["target"][:train_num]
+            valid_mask = data["agent"]["valid_mask"][:train_num, :, :]
+            targets_vel = data["agent"]["velocity"][:train_num, -1, :]
+
+            target = torch.cat(
+                [
+                    targets_pos[..., :2],
+                    torch.stack(
+                        [targets_pos[..., 2].cos(), targets_pos[..., 2].sin()], dim=-1
+                    ),
+                    targets_vel,
+                ],
+                dim=-1,
+            )
+
+            bs, TH, M, TF, _ = trajectory.shape
+            ego_target_all, ego_target_all_mask = generate_target(position=target[:, 0], 
+                                                            mask=data["agent"]["valid_mask"][:,-1, 0],
+                                                            num_historical_steps=20,
+                                                            num_future_steps=TF, targets_pos=targets_pos)  #[(N1,...Nb),H,F,2],[(N1,...Nb),H,F]
+            ego_target_all = ego_target_all.index_select(1, res["select_indices"]-1)
+            ego_target_all_mask = ego_target_all_mask.index_select(1, res["select_indices"]-1)
+
+            # planning loss
+            ego_reg_loss, ego_cls_loss, collision_loss, best_trajectory_curr = self.get_planning_loss(
+                data, trajectory[:, -1], probability[:, -1], ego_target_all_mask[:, -1], ego_target_all[:, -1], train_num
+            )
+
+            # history prediction reg loss
+            his_prediction_reg_loss, his_prediction_cls_loss, best_trajectory_his = self.get_his_prediction_loss(
+                data, trajectory[:, :-1], probability[:, :-1], ego_target_all_mask[:, :-1], ego_target_all[:, :-1], train_num
+            )
+
+            compliant_loss = ego_reg_loss.new_zeros(1)
+            # if self.use_compliant_loss and R > 0:
+            # # compliant loss between history prediction and planning
+                # current_best_pred = best_trajectory_curr
+                # his_best_pred = best_trajectory_his[-1]
+                # compliant_loss = self.compliant_loss_weight * self.get_his_current_compliant_loss(trajectory)
+
+            if ref_free_trajectory is not None:
+                ego_ref_free_reg_loss = F.smooth_l1_loss(
+                    ref_free_trajectory[:train_num],
+                    ego_target_all[:, -1, ..., :ref_free_trajectory.shape[-1]],
+                    reduction="none",
+                ).sum(-1)
+                ego_ref_free_reg_loss = (
+                    ego_ref_free_reg_loss * ego_target_all_mask[:, -1]
+                ).sum() / ego_target_all_mask[:, -1].sum()
+            else:
+                ego_ref_free_reg_loss = ego_reg_loss.new_zeros(1)
+
+            # prediction loss
+            prediction_loss = self.get_prediction_loss(
+                prediction, valid_mask[:, -1, 1:, self.history_steps:], target[:, 1:, self.history_steps:]
+            )
+
+            if self.training and self.use_contrast_loss:
+                contrastive_loss = self._compute_contrastive_loss(
+                    res["hidden"], data["data_n_valid_mask"]
+                )
+            else:
+                contrastive_loss = prediction_loss.new_zeros(1)
+
+            loss = (
+                ego_reg_loss
+                + ego_cls_loss
+                + prediction_loss
+                + contrastive_loss
+                + collision_loss
+                + ego_ref_free_reg_loss
+                + his_prediction_reg_loss
+                + his_prediction_cls_loss
+                + compliant_loss
+            )
+
+            return {
+                "loss": loss,
+                "reg_loss": ego_reg_loss.item(),
+                "cls_loss": ego_cls_loss.item(),
+                "ref_free_reg_loss": ego_ref_free_reg_loss.item(),
+                "collision_loss": collision_loss.item(),
+                "prediction_loss": prediction_loss.item(),
+                "contrastive_loss": contrastive_loss.item(),
+                "his_prediction_reg_loss": his_prediction_reg_loss.item() if self.model.use_history_attention else 0,
+                "his_prediction_cls_loss": his_prediction_cls_loss.item() if self.model.use_history_attention else 0,
+                "compliant_loss": compliant_loss.item() if isinstance(compliant_loss, torch.Tensor) else 0
+            }
+
+
+    def get_prediction_loss(self, prediction, valid_mask, target):
+        """
+        prediction: (bs, A-1, T, 6)
+        valid_mask: (bs, A-1, T)
+        target: (bs, A-1, 6)
+        """
         prediction_loss = F.smooth_l1_loss(
-            prediction[agent_valid_mask][..., :2], agent_target[agent_valid_mask][:, :2]
-        )
+            prediction[valid_mask], target[valid_mask], reduction="none"
+        ).sum(-1)
+        prediction_loss = prediction_loss.sum() / valid_mask.sum()
 
-        if self.training and self.use_contrast_loss:
-            contrastive_loss = self._compute_contrastive_loss(
-                res["hidden"], data["data_n_valid_mask"]
-            )
-        else:
-            contrastive_loss = prediction_loss.new_zeros(1)
-
-        loss = (
-            ego_reg_loss
-            + ego_cls_loss
-            + prediction_loss
-            + contrastive_loss
-            + collision_loss
-            + ego_ref_free_reg_loss
-        )
-
-        return {
-            "loss": loss,
-            "reg_loss": ego_reg_loss.item(),
-            "cls_loss": ego_cls_loss.item(),
-            "ref_free_reg_loss": ego_ref_free_reg_loss.item(),
-            "collision_loss": collision_loss.item(),
-            "prediction_loss": prediction_loss.item(),
-            "contrastive_loss": contrastive_loss.item(),
-        }
-
-    # def get_prediction_loss(self, data, prediction, valid_mask, target):
-    #     """
-    #     prediction: (bs, A-1, T, 6)
-    #     valid_mask: (bs, A-1, T)
-    #     target: (bs, A-1, 6)
-    #     """
-    #     prediction_loss = F.smooth_l1_loss(
-    #         prediction[valid_mask], target[valid_mask], reduction="none"
-    #     ).sum(-1)
-    #     prediction_loss = prediction_loss.sum() / valid_mask.sum()
-
-    #     return prediction_loss
+        return prediction_loss
 
     def get_planning_loss(self, data, trajectory, probability, valid_mask, target, bs):
         """
         trajectory: (bs, R, M, T, 4)
         valid_mask: (bs, T)
         """
-        # num_valid_points = valid_mask.sum(-1)
-        # endpoint_index = (num_valid_points / 10).long().clamp_(min=0, max=7)  # max 8s
-        # r_padding_mask = ~data["reference_line"]["valid_mask"][:bs].any(-1)  # (bs, R)
-        # future_projection = data["reference_line"]["future_projection"][:bs][
-        #     torch.arange(bs), :, endpoint_index
-        # ]
-
-        # target_r_index = torch.argmin(
-        #     future_projection[..., 1] + 1e6 * r_padding_mask, dim=-1
-        # )
-        # target_m_index = (
-        #     future_projection[torch.arange(bs), target_r_index, 0] / self.mode_interval
-        # ).long()
-        # target_m_index.clamp_(min=0, max=self.num_modes - 1)
-
-        # target_label = torch.zeros_like(probability)
-        # target_label[torch.arange(bs), target_r_index, target_m_index] = 1
-
-        # best_trajectory = trajectory[torch.arange(bs), target_r_index, target_m_index]
 
         ade = torch.norm(trajectory[..., :2] - target[:, None, :, :2], dim=-1)
         best_mode = torch.argmin(ade.sum(-1), dim=-1)
         best_trajectory = trajectory[torch.arange(trajectory.shape[0]), best_mode]
+        ego_reg_loss = F.smooth_l1_loss(best_trajectory, target, reduction="none").sum(-1)
+        ego_reg_loss = (ego_reg_loss * valid_mask).sum() / valid_mask.sum()
+        ego_cls_loss = F.cross_entropy(probability, best_mode.detach())
 
         if self.use_collision_loss:
             collision_loss = self.collision_loss(
@@ -224,15 +317,6 @@ class LightningTrainer(pl.LightningModule):
             )
         else:
             collision_loss = trajectory.new_zeros(1)
-
-        reg_loss = F.smooth_l1_loss(best_trajectory, target, reduction="none").sum(-1)
-        reg_loss = (reg_loss * valid_mask).sum() / valid_mask.sum()
-
-        probability.masked_fill_(r_padding_mask.unsqueeze(-1), -1e6)
-
-        cls_loss = F.cross_entropy(
-            probability.reshape(bs, -1), target_label.reshape(bs, -1).detach()
-        )
 
         if self.regulate_yaw:
             heading_vec_norm = torch.norm(best_trajectory[..., 2:4], dim=-1)
@@ -241,7 +325,53 @@ class LightningTrainer(pl.LightningModule):
             )
             reg_loss += yaw_regularization_loss
 
-        return reg_loss, cls_loss, collision_loss
+        return ego_reg_loss, ego_cls_loss, collision_loss, best_trajectory
+
+    def get_his_prediction_loss(self, data, trajectory, probability, valid_mask, target, bs):
+        """
+        trajectory: (bs, Th, R, M, Tf, 4)
+        valid_mask: (bs, T)
+        """
+
+        bs, Th, M, Tf, _ = trajectory.shape
+        
+        if Th==0 :
+            return 0, 0
+
+        reg_loss_all = 0
+        cls_loss_all = 0
+        best_trajectory_list = []
+
+        for i in range(Th):
+
+            valid_mask_once = valid_mask[:, i]
+            trajectory_once = trajectory[:, i]
+            probability_once = probability[:, i]
+            target_once = target[:, i]
+
+            ade = torch.norm(trajectory_once[..., :2] - target_once[:, None, :, :2], dim=-1)
+            best_mode = torch.argmin(ade.sum(-1), dim=-1)
+            best_trajectory = trajectory_once[torch.arange(trajectory_once.shape[0]), best_mode]
+            cls_loss = F.cross_entropy(probability_once, best_mode.detach())
+
+            reg_loss = F.smooth_l1_loss(best_trajectory, target_once, reduction="none").sum(-1)
+            reg_loss = (reg_loss * valid_mask_once).sum() / valid_mask_once.sum()
+
+            if self.regulate_yaw:
+                heading_vec_norm = torch.norm(best_trajectory[..., 2:4], dim=-1)
+                yaw_regularization_loss = F.l1_loss(
+                    heading_vec_norm, heading_vec_norm.new_ones(heading_vec_norm.shape)
+                )
+                reg_loss += yaw_regularization_loss
+            
+            reg_loss_all += reg_loss
+            cls_loss_all += cls_loss
+            best_trajectory_list.append(best_trajectory)
+        
+        reg_loss = reg_loss_all / Th
+        cls_loss = cls_loss_all / Th
+
+        return reg_loss, cls_loss, best_trajectory_list
 
     def _compute_metrics(self, res, data, prefix) -> Dict[str, torch.Tensor]:
         """
@@ -267,7 +397,8 @@ class LightningTrainer(pl.LightningModule):
             "probability": probability,
             "prediction": res["prediction"][..., :2],
             "prediction_target": data["agent"]["target"][:, 1:],
-            "valid_mask": data["agent"]["valid_mask"][:, 1:, self.history_steps :],
+            "valid_mask": data["agent"]["valid_mask"][:, -1, 1:, self.history_steps :] if self.model.use_history_attention \
+                else data["agent"]["valid_mask"][:, 1:, self.history_steps :],
         }
         target = data["agent"]["target"][:, 0]
 
@@ -433,3 +564,14 @@ class LightningTrainer(pl.LightningModule):
         )
 
         return [optimizer], [scheduler]
+
+def generate_target(position: torch.Tensor, mask: torch.Tensor, num_historical_steps: int, num_future_steps: int, targets_pos: torch.Tensor,) -> Tuple[torch.Tensor, torch.Tensor]:
+    target_traj = [position[:, i+1:i+1+num_future_steps] for i in range(num_historical_steps)]
+    target_traj = torch.stack(target_traj, dim=1)
+    target_mask = [mask[:,i+1:i+1+num_future_steps] for i in range(num_historical_steps)]
+    target_mask = torch.stack(target_mask, dim=1)
+    for i in range(num_historical_steps):
+        target_traj[:,i,:,:2] = target_traj[:,i,:,:2] - target_traj[:,i,0,:2].unsqueeze(1)
+        heading = targets_pos[:,0,i+1:i+1+num_future_steps,2] - targets_pos[:,0,i,2].unsqueeze(1)
+        target_traj[:,i,:,2:4] = torch.stack([heading.cos(), heading.sin()], dim=-1)
+    return target_traj, target_mask
