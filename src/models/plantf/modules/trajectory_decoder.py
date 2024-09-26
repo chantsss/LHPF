@@ -39,4 +39,4 @@ class TrajectoryDecoder(nn.Module):
             loc = self.loc(x).view(-1, self.num_modes, self.future_steps, self.out_channels)
             pi = self.pi(x).squeeze(-1)
 
-        return loc, pi
+        return loc, pi, x

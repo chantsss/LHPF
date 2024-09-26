@@ -40,6 +40,7 @@ class PlanningModel(TorchModuleWrapper):
         state_dropout=0.75,
         use_history_attention=False,
         use_history_attention_intervals=1,
+        use_his_offest=False,
         feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder(),
     ) -> None:
         super().__init__(
@@ -54,6 +55,7 @@ class PlanningModel(TorchModuleWrapper):
 
         self.use_history_attention = use_history_attention
         self.use_history_attention_intervals = use_history_attention_intervals
+        self.use_his_offest = use_his_offest
         if self.use_history_attention:
             self.select_indices = list(range(self.history_steps - 1, 0, -self.use_history_attention_intervals))
             self.select_indices.reverse() 
@@ -88,12 +90,26 @@ class PlanningModel(TorchModuleWrapper):
         )
         self.norm = nn.LayerNorm(dim)
 
-        self.trajectory_decoder = TrajectoryDecoder(
-            embed_dim=dim,
-            num_modes=num_modes,
-            future_steps=future_steps,
-            out_channels=6,
-        )
+        if not self.use_his_offest:
+            self.trajectory_decoder = TrajectoryDecoder(
+                embed_dim=dim,
+                num_modes=num_modes,
+                future_steps=future_steps,
+                out_channels=6,
+            )
+        else:
+            self.trajectory_decoder_curr = TrajectoryDecoder(
+                embed_dim=dim,
+                num_modes=num_modes,
+                future_steps=future_steps,
+                out_channels=6,
+            )
+            self.trajectory_decoder_his = TrajectoryDecoder(
+                embed_dim=dim,
+                num_modes=num_modes,
+                future_steps=future_steps,
+                out_channels=6,
+            )
         self.agent_predictor = AgentPredictor(dim=dim, future_steps=future_steps)
 
         self.apply(self._init_weights)
@@ -150,11 +166,20 @@ class PlanningModel(TorchModuleWrapper):
             x = self.norm(x)
 
             x = x.reshape(bs, used_T, -1, self.dim)
-
             prediction = self.agent_predictor(x[:, -1, 1:A])
-            trajectory, probability = self.trajectory_decoder(x[:, :, 0])
-            probability_now = probability[:, -1]
-            trajectory_now = trajectory[:, -1]
+
+            if not self.use_his_offest:    
+
+                trajectory, probability, _ = self.trajectory_decoder(x[:, :, 0])
+                probability= probability[:, -1]
+                trajectory = trajectory[:, -1]
+
+            else:
+                trajectory_his, probability_his, _ = self.trajectory_decoder_his(x[:, -2, 0])
+                trajectory_now, probability_now, _ = self.trajectory_decoder_curr(x[:, -1, 0] + x[:, -2, 0])
+                trajectory_now += trajectory_his
+                trajectory = torch.concat((trajectory_his.unsqueeze(1), trajectory_now.unsqueeze(1)), dim=1)
+                probability = torch.concat((probability_his.unsqueeze(1), probability_now.unsqueeze(1)), dim=1)
             out = {
                 "trajectory": trajectory_now,
                 "probability": probability_now,  # (bs, R, M)
@@ -217,7 +242,7 @@ class PlanningModel(TorchModuleWrapper):
                 x = blk(x, key_padding_mask=key_padding_mask)
             x = self.norm(x)
 
-            trajectory, probability = self.trajectory_decoder(x[:, 0])
+            trajectory, probability, _ = self.trajectory_decoder(x[:, 0])
             prediction = self.agent_predictor(x[:, 1:A])
 
             out = {
