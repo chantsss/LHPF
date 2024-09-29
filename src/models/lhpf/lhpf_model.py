@@ -4,6 +4,8 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
+import pickle
+
 from nuplan.planning.simulation.trajectory.trajectory_sampling import TrajectorySampling
 from nuplan.planning.training.modeling.torch_module_wrapper import TorchModuleWrapper
 from nuplan.planning.training.preprocessing.target_builders.ego_trajectory_target_builder import (
@@ -48,6 +50,7 @@ class PlanningModel(TorchModuleWrapper):
         ref_free_traj=False,
         use_history_attention=False,
         use_history_attention_intervals=1,
+        cluster_results_file_path = None,
         feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder(),
     ) -> None:
         super().__init__(
@@ -75,6 +78,11 @@ class PlanningModel(TorchModuleWrapper):
         self.compliant_loss_decay_weights = torch.nn.Parameter(0.9 ** torch.arange(int(self.compliant_length)), requires_grad=False).unsqueeze(-1)
 
         self.pos_emb = FourierEmbedding(3, dim, 64)
+
+        with open(cluster_results_file_path, "rb") as file:
+            cluster_results = pickle.load(file)
+            # it is dict, get its values
+            cluster_results = cluster_results['cluster_centers']
 
         self.agent_encoder = AgentEncoder(
             state_channel=state_channel,
@@ -113,6 +121,7 @@ class PlanningModel(TorchModuleWrapper):
             future_steps=future_steps,
             use_history_attention=use_history_attention,
             used_T=len(self.select_indices),
+            cluster_modes=cluster_results,
         )
 
         if use_hidden_proj:
