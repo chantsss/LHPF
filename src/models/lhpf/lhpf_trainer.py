@@ -36,7 +36,7 @@ class LightningTrainer(pl.LightningModule):
         warmup_epochs,
         use_collision_loss=True,
         use_contrast_loss=False,
-        use_compliant_loss=True,
+        use_compliant_loss=False,
         regulate_yaw=False,
         objective_aggregate_mode: str = "mean",
         compliant_loss_weight: float = 1,
@@ -165,13 +165,14 @@ class LightningTrainer(pl.LightningModule):
         his_prediction_reg_loss, his_prediction_cls_loss, best_trajectory_his = self.get_his_prediction_loss(
             data, trajectory[:, :-1], probability[:, :-1], ego_target_all_mask[:, :-1], ego_target_all[:, :-1], train_num
         )
-
-        compliant_loss = 0
+        
         if self.use_compliant_loss and R > 0:
         # # compliant loss between history prediction and planning
             # current_best_pred = best_trajectory_curr
             # his_best_pred = best_trajectory_his[-1]
             compliant_loss = self.compliant_loss_weight * self.get_his_current_compliant_loss(trajectory)
+        else:
+            compliant_loss = ego_reg_loss.new_zeros(1)
 
         if ref_free_trajectory is not None:
             ego_ref_free_reg_loss = F.smooth_l1_loss(

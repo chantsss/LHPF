@@ -36,9 +36,9 @@ class DecoderLayer(nn.Module):
         self.cross_attn = nn.MultiheadAttention(
             dim, num_heads, dropout=dropout, batch_first=True
         )
-        self.h2h_attn = nn.MultiheadAttention(
-            dim, num_heads, dropout=dropout, batch_first=True
-        )
+        # self.h2h_attn = nn.MultiheadAttention(
+        #     dim, num_heads, dropout=dropout, batch_first=True
+        # )
 
         self.ffn = nn.Sequential(
             nn.Linear(dim, dim * mlp_ratio),
@@ -141,6 +141,7 @@ class PlanningDecoder(nn.Module):
         cat_x=False,
         use_history_attention=False,
         used_T=1,
+        cluster_modes=None,
     ) -> None:
         super().__init__()
 
@@ -164,7 +165,11 @@ class PlanningDecoder(nn.Module):
         self.q_proj = nn.Linear(2 * dim, dim)
 
         self.m_emb = nn.Parameter(torch.Tensor(1, 1, num_mode, dim))
-        self.m_pos = nn.Parameter(torch.Tensor(1, num_mode, dim))
+        # self.m_pos = nn.Parameter(torch.Tensor(1, num_mode, dim))
+        self.m_pos_to_dim = FourierEmbedding(3, dim, dim)
+        self.m_pos = nn.Parameter(torch.Tensor(cluster_modes).unsqueeze(0), requires_grad=False)
+
+        self.used_T_list = nn.Parameter(torch.tensor(range(self.used_T), dtype=torch.long), requires_grad=False)
         # self.h_emb = nn.Parameter(torch.Tensor(1, used_T, num_mode, dim * 2))
         # nn.init.normal_(self.h_emb, mean=0.0, std=0.01)
         # nn.Parameter(torch.Tensor(1, used_T, num_mode, dim * 2))
@@ -188,7 +193,7 @@ class PlanningDecoder(nn.Module):
         self.pi_head = MLPLayer(dim, dim, 1)
 
         nn.init.normal_(self.m_emb, mean=0.0, std=0.01)
-        nn.init.normal_(self.m_pos, mean=0.0, std=0.01)
+        # nn.init.normal_(self.m_pos, mean=0.0, std=0.01)
         # nn.init.normal_(self.h_emb, mean=0.0, std=0.01)
 
     def forward(self, data, enc_data):
@@ -222,8 +227,9 @@ class PlanningDecoder(nn.Module):
         # if self.use_history_attention:
         r_emb = r_emb.unsqueeze(-2).repeat(1, 1, 1, self.num_mode, 1)
         m_emb = self.m_emb.unsqueeze(1).repeat(bs, used_T, R, 1, 1)
-        used_T_list = torch.tensor(range(self.used_T), dtype=torch.long, device=m_emb.device)
-        h_emb = self.h_emb(used_T_list) # 5, 256
+        m_pos = self.m_pos_to_dim(self.m_pos)
+        
+        h_emb = self.h_emb(self.used_T_list) # 5, 256
         h_emb = h_emb.unsqueeze(0).unsqueeze(2).unsqueeze(2).repeat(bs, 1, R, self.num_mode, 1)
         # else:
         #     r_emb = r_emb.repeat(1, 1, 1, 1)
@@ -237,7 +243,7 @@ class PlanningDecoder(nn.Module):
                 enc_emb,
                 tgt_key_padding_mask=r_key_padding_mask,
                 memory_key_padding_mask=enc_key_padding_mask,
-                m_pos=self.m_pos,
+                m_pos=m_pos,
             )
             assert torch.isfinite(q).all()
 
