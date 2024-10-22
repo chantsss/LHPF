@@ -21,6 +21,7 @@ from src.metrics.prediction_avg_fde import PredAvgFDE
 from src.optim.warmup_cos_lr import WarmupCosLR
 
 from .loss.esdf_collision_loss import ESDFCollisionLoss
+from .loss.comfort_loss import TrajectoryComfortLoss
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class LightningTrainer(pl.LightningModule):
         epochs,
         warmup_epochs,
         use_collision_loss=True,
+        use_comfort_loss=False,
         use_contrast_loss=False,
         regulate_yaw=False,
         objective_aggregate_mode: str = "mean",
@@ -61,6 +63,7 @@ class LightningTrainer(pl.LightningModule):
         self.objective_aggregate_mode = objective_aggregate_mode
         self.history_steps = model.history_steps
         self.use_collision_loss = use_collision_loss
+        self.use_comfort_loss = use_comfort_loss
         self.use_contrast_loss = use_contrast_loss
         self.regulate_yaw = regulate_yaw
 
@@ -70,6 +73,8 @@ class LightningTrainer(pl.LightningModule):
 
         if use_collision_loss:
             self.collision_loss = ESDFCollisionLoss()
+        if use_comfort_loss:
+            self.comfort_loss = TrajectoryComfortLoss()
 
     def on_fit_start(self) -> None:
         metrics_collection = MetricCollection(
@@ -139,7 +144,7 @@ class LightningTrainer(pl.LightningModule):
         )
 
         # planning loss
-        ego_reg_loss, ego_cls_loss, collision_loss = self.get_planning_loss(
+        ego_reg_loss, ego_cls_loss, collision_loss, comfort_loss, speed_loss = self.get_planning_loss(
             data, trajectory, probability, valid_mask[:, 0], target[:, 0], train_num
         )
         if ref_free_trajectory is not None:
@@ -172,6 +177,8 @@ class LightningTrainer(pl.LightningModule):
             + prediction_loss
             + contrastive_loss
             + collision_loss
+            + comfort_loss
+            + speed_loss
             + ego_ref_free_reg_loss
         )
 
@@ -181,6 +188,8 @@ class LightningTrainer(pl.LightningModule):
             "cls_loss": ego_cls_loss.item(),
             "ref_free_reg_loss": ego_ref_free_reg_loss.item(),
             "collision_loss": collision_loss.item(),
+            "comfort_loss": comfort_loss.item(),
+            "speed_loss": speed_loss.item(),
             "prediction_loss": prediction_loss.item(),
             "contrastive_loss": contrastive_loss.item(),
         }
@@ -230,6 +239,11 @@ class LightningTrainer(pl.LightningModule):
         else:
             collision_loss = trajectory.new_zeros(1)
 
+        if self.use_comfort_loss:
+            comfort_loss, speed_loss = self.comfort_loss(best_trajectory, target)
+        else:
+            comfort_loss, speed_loss = trajectory.new_zeros(1), trajectory.new_zeros(1)
+
         reg_loss = F.smooth_l1_loss(best_trajectory, target, reduction="none").sum(-1)
         reg_loss = (reg_loss * valid_mask).sum() / valid_mask.sum()
 
@@ -246,7 +260,7 @@ class LightningTrainer(pl.LightningModule):
             )
             reg_loss += yaw_regularization_loss
 
-        return reg_loss, cls_loss, collision_loss
+        return reg_loss, cls_loss, collision_loss, comfort_loss, speed_loss
 
     def _compute_contrastive_loss(
         self, hidden, valid_mask, normalize=True, tempreture=0.1

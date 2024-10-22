@@ -177,7 +177,7 @@ class PlanningModel(TorchModuleWrapper):
             else:
                 trajectory_his, probability_his, _ = self.trajectory_decoder_his(x[:, -2, 0])
                 trajectory_now, probability_now, _ = self.trajectory_decoder_curr(x[:, -1, 0] + x[:, -2, 0])
-                trajectory_now += trajectory_his
+                # trajectory_now += trajectory_his
                 trajectory = torch.concat((trajectory_his.unsqueeze(1), trajectory_now.unsqueeze(1)), dim=1)
                 probability = torch.concat((probability_his.unsqueeze(1), probability_now.unsqueeze(1)), dim=1)
             out = {

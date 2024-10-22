@@ -181,8 +181,8 @@ class LightningTrainer(pl.LightningModule):
                 reduction="none",
             ).sum(-1)
             ego_ref_free_reg_loss = (
-                ego_ref_free_reg_loss * ego_target_all_mask[:, -1]
-            ).sum() / ego_target_all_mask[:, -1].sum()
+                ego_ref_free_reg_loss * ego_target_all_mask[:train_num, -1]
+            ).sum() / ego_target_all_mask[:train_num, -1].sum()
         else:
             ego_ref_free_reg_loss = ego_reg_loss.new_zeros(1)
 
@@ -241,6 +241,7 @@ class LightningTrainer(pl.LightningModule):
         trajectory: (bs, R, M, T, 4)
         valid_mask: (bs, T)
         """
+        valid_mask = valid_mask[:bs]
         num_valid_points = valid_mask.sum(-1)
         endpoint_index = (num_valid_points / 10).long().clamp_(min=0, max=7)  # max 8s
         r_padding_mask = ~data["reference_line"]["valid_mask"][:bs, -1].any(-1)  # (bs, R)
@@ -315,7 +316,7 @@ class LightningTrainer(pl.LightningModule):
 
         for i in range(Th):
 
-            valid_mask_once = valid_mask[:, i]
+            valid_mask_once = valid_mask[:bs, i]
             trajectory_once = trajectory[:, i]
             probability_once = probability[:, i]
             target_once = target[:, i]
