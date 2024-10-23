@@ -1108,8 +1108,8 @@ scenario_tokens:
 - '88b59b17628a52a5'
 log_names: null
 map_names: null
-num_scenarios_per_type: null
-limit_total_scenarios: null
+num_scenarios_per_type: 7 # 14
+limit_total_scenarios: 100 #1090
 timestamp_threshold_s: 15
 ego_displacement_minimum_m: null
 ego_start_speed_threshold: null

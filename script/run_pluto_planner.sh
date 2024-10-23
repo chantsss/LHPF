@@ -12,8 +12,7 @@ VIDEO_SAVE_DIR=$5
 # CHALLENGE="open_loop_boxes"
 
 # for CHALLENGE in "open_loop_boxes" "closed_loop_nonreactive_agents" "closed_loop_reactive_agents"
-for CHALLENGE in "closed_loop_reactive_agents"
-
+for CHALLENGE in "closed_loop_nonreactive_agents" "closed_loop_reactive_agents"
 do 
 python run_simulation.py \
     +simulation=$CHALLENGE \
@@ -23,7 +22,8 @@ python run_simulation.py \
     worker=sequential \
     verbose=true \
     experiment_uid="pluto_planner/$FILTER" \
-    planner.pluto_planner.render=true \
+    planner.pluto_planner.render=false \
     planner.pluto_planner.planner_ckpt="$CKPT_ROOT/$CKPT" \
+    +planner.pluto_planner.pure_leanrning=true \
     +planner.pluto_planner.save_dir=$VIDEO_SAVE_DIR
 done

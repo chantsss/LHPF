@@ -19,20 +19,46 @@ from .modules.map_encoder import MapEncoder
 from .modules.static_objects_encoder import StaticObjectsEncoder
 from .modules.planning_decoder import PlanningDecoder
 from .layers.mlp_layer import MLPLayer
+from mamba_ssm import Mamba2
 
 trajectory_sampling = TrajectorySampling(num_poses=8, time_horizon=8, interval_length=1)
 
 class PlanningModel(TorchModuleWrapper):
-    def __init__(self, dim=128, state_channel=6, polygon_channel=6, history_channel=9, history_steps=21, future_steps=80,
-                 encoder_depth=4, decoder_depth=4, drop_path=0.2, dropout=0.1, num_heads=8, num_modes=6, use_ego_history=False,
-                 state_attn_encoder=True, state_dropout=0.75, use_hidden_proj=False, cat_x=False, ref_free_traj=False,
-                 use_history_attention=False, use_history_attention_intervals=1, cluster_results_file_path=None,
-                 feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder()) -> None:
-        super().__init__(feature_builders=[feature_builder],
-                         target_builders=[EgoTrajectoryTargetBuilder(trajectory_sampling)],
-                         future_trajectory_sampling=trajectory_sampling)
+    def __init__(
+        self,
+        dim=128,
+        state_channel=6,
+        polygon_channel=6,
+        history_channel=9,
+        history_steps=21,
+        future_steps=80,
+        encoder_depth=4,
+        decoder_depth=4,
+        drop_path=0.2,
+        dropout=0.1,
+        num_heads=8,
+        num_modes=6,
+        use_ego_history=False,
+        state_attn_encoder=True,
+        state_dropout=0.75,
+        use_hidden_proj=False,
+        cat_x=False,
+        ref_free_traj=False,
+        use_history_attention=False,
+        use_history_attention_intervals=1,
+        use_mamba=False,
+        cluster_results_file_path = None,
+        feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder(),
+    ) -> None:
+        super().__init__(
+            feature_builders=[feature_builder],
+            target_builders=[EgoTrajectoryTargetBuilder(trajectory_sampling)],
+            future_trajectory_sampling=trajectory_sampling,
+        )
 
-        self.dim = dim
+        self.use_mamba = use_mamba
+        # if self.use_mamba:
+        self.dim = dim 
         self.history_steps = history_steps
         self.future_steps = future_steps
         self.use_hidden_proj = use_hidden_proj
@@ -41,7 +67,13 @@ class PlanningModel(TorchModuleWrapper):
         self.ref_free_traj = ref_free_traj
         self.use_history_attention = use_history_attention
         self.use_history_attention_intervals = use_history_attention_intervals
-        self.select_indices = self._init_select_indices()
+        
+        if self.use_history_attention:
+            self.select_indices = list(range(self.history_steps - 1, 0, -self.use_history_attention_intervals))
+            self.select_indices.reverse() 
+            self.select_indices = torch.tensor(self.select_indices, dtype=torch.long)
+        else:
+            self.select_indices = torch.tensor([19], dtype=torch.long)
         self.compliant_length = torch.tensor([70], dtype=torch.long)
         self.compliant_loss_decay_weights = torch.nn.Parameter(0.9 ** torch.arange(int(self.compliant_length)), requires_grad=False).unsqueeze(-1)
 
@@ -55,12 +87,18 @@ class PlanningModel(TorchModuleWrapper):
         self.map_encoder = MapEncoder(dim=dim, polygon_channel=polygon_channel, use_lane_boundary=True)
         self.static_objects_encoder = StaticObjectsEncoder(dim=dim)
 
-        self.encoder_blocks = nn.ModuleList(
-            TransformerEncoderLayer(dim=dim, num_heads=num_heads, drop_path=dp)
-            for dp in torch.linspace(0, drop_path, encoder_depth)
-        )
-        self.norm = nn.LayerNorm(dim)
+        if self.use_mamba:
+            self.encoder_blocks = nn.ModuleList(
+                Mamba2(d_model=dim, d_state=64, d_conv=4, expand=2)
+                for _ in range(encoder_depth)
+            )
+        else:
+            self.encoder_blocks = nn.ModuleList(
+                TransformerEncoderLayer(dim=dim, num_heads=num_heads, drop_path=dp)
+                for dp in [x.item() for x in torch.linspace(0, drop_path, encoder_depth)]
+            )
 
+        self.norm = nn.LayerNorm(dim)
         self.agent_predictor = AgentPredictor(dim=dim, future_steps=future_steps)
         self.planning_decoder = PlanningDecoder(num_mode=num_modes, decoder_depth=decoder_depth, dim=dim, num_heads=num_heads,
                                                 mlp_ratio=4, dropout=dropout, cat_x=cat_x, future_steps=future_steps,
@@ -199,10 +237,12 @@ class PlanningModel(TorchModuleWrapper):
 
         key_padding_mask = torch.cat([key_padding_mask, static_key_padding], dim=-1)
         x = x + pos_embed
-        x = x.reshape(bs * used_T, -1, self.dim)
-        key_padding_mask = key_padding_mask.reshape(bs * used_T, -1)
+        x = x.reshape(bs*used_T, -1, self.dim)
+        # key_padding_mask = key_padding_mask.reshape(bs*used_T, -1)
+        
+        x = x * ~key_padding_mask.reshape(bs*used_T, -1).unsqueeze(-1)
         for blk in self.encoder_blocks:
-            x = blk(x, key_padding_mask=key_padding_mask, return_attn_weights=False)
+            x = blk(x)
         x = self.norm(x)
 
         x = x.reshape(bs, used_T, -1, self.dim)

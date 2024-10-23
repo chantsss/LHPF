@@ -16,8 +16,8 @@ num_modes: 12
 state_dropout: 0.75
 use_ego_history: false
 state_attn_encoder: true
-ref_free_traj: true
 use_hidden_proj: true
+ref_free_traj: true
 cat_x: true
 
 feature_builder:

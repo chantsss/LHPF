@@ -51,11 +51,13 @@ class TrajectoryEvaluator:
         self,
         dt: float = 0.1,
         num_frames: int = 40,
+        expansion_factor: float = 1.0,
     ) -> None:
         assert dt * num_frames <= 8, "dt * num_frames should be less than 8s"
 
         self._dt = dt
         self._num_frames = num_frames
+        self._expansion_factor = expansion_factor
 
         self._route_lane_dict = None
         self._drivable_area_map: Optional[OccupancyMap] = None
@@ -168,7 +170,7 @@ class TrajectoryEvaluator:
         vertices = compute_agents_vertices(
             center=ego_rear_to_center(rollout_states[..., :2], rollout_states[..., 2]),
             angle=rollout_states[..., 2],
-            shape=self._ego_shape[None, :].repeat(N, axis=0),
+            shape=self._ego_shape[None, :].repeat(N, axis=0) * self._expansion_factor,
         )
 
         self._init_ego_state = init_ego_state
@@ -412,19 +414,21 @@ class TrajectoryEvaluator:
         self._multi_metrics[MultiMetricIndex.DRIVABLE_AREA] = scores
 
     def _evaluate_progress(self):
+        
         progress = np.zeros(self._num_candidates, dtype=np.float64)
-
-        start_point = shapely.Point(*self._init_ego_state.rear_axle.array)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            start_progress = self._ego_baseline_path.project(start_point)
-
-        for i in range(self._num_candidates):
-            end_point = shapely.Point(*self._ego_rollout[i, -1, :2])
+        
+        if self._ego_baseline_path is not None:
+            start_point = shapely.Point(*self._init_ego_state.rear_axle.array)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                end_progress = self._ego_baseline_path.project(end_point)
-            progress[i] = max(end_progress - start_progress, 0.0)
+                start_progress = self._ego_baseline_path.project(start_point)
+
+            for i in range(self._num_candidates):
+                end_point = shapely.Point(*self._ego_rollout[i, -1, :2])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    end_progress = self._ego_baseline_path.project(end_point)
+                progress[i] = max(end_progress - start_progress, 0.0)
 
         self._ego_progress = progress
 

@@ -1,7 +1,7 @@
 _target_: src.models.lhpf.lhpf_model.PlanningModel
 _convert_: "all"
 
-dim: 128
+dim: 256
 state_channel: 6
 polygon_channel: 6
 history_channel: 9

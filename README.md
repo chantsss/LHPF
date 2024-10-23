@@ -61,10 +61,10 @@ Then preprocess the whole nuPlan training set (this will take some time). You ma
  HYDRA_FULL_ERROR=1 python run_training.py \
     py_func=cache +training=train_pluto \
     scenario_builder=nuplan \
-    cache.cache_path=/media/sheng/T9/nuplan/exp/cache_pluto_1M \
+    cache.cache_path=/media/sheng/ssd/dataset/nuplan/exp/cache_pluto_1M \
     cache.cleanup_cache=true \
     scenario_filter=training_scenarios_1M \
-    worker.threads_per_node=12
+    worker.threads_per_node=6
 ```
 
 ## Training

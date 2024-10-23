@@ -180,6 +180,8 @@ class PlutoFeature(AbstractModelFeature):
         )
 
         data["current_state"][:3] = 0
+        # set 0 to current states
+        data["current_states"][:, :3] = 0
         data["agent"]["position"] = np.matmul(
             data["agent"]["position"] - center_xy, rotate_mat
         )

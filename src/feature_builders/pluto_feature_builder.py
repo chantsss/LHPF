@@ -218,7 +218,14 @@ class PlutoFeatureBuilder(AbstractFeatureBuilder):
         data["current_state"] = self._get_ego_current_state(
             ego_state_list[present_idx], ego_state_list[present_idx - 1]
         )
-
+        # loop for get a list of ego current state, store in data["current_states"]
+        current_states = []
+        for i in range(self.history_samples):
+            # use self._get_ego_current_state to get ego current state
+            current_states.append(
+                self._get_ego_current_state(ego_state_list[present_idx - i], ego_state_list[present_idx - i - 1])
+            )
+        data["current_states"] = np.stack(current_states, axis=0)
         ego_features = self._get_ego_features(ego_states=ego_state_list)
         agent_features, agent_tokens, agents_polygon = self._get_agent_features(
             query_xy=query_xy,

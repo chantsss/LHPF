@@ -233,7 +233,9 @@ class ScenarioManager:
         if self._route_manager.reference_lines:
             return self._route_manager.reference_lines
         else:
-            raise ValueError("Reference lines not cached")
+            print("Reference lines not cached, trying to use reference lines not cached")
+            return self._route_manager.get_reference_lines(self._ego_state, length=100)
+            # raise ValueError("Reference lines not cached")
 
     def object_in_drivable_area(self, polygon: Polygon):
         return len(self._drivable_area_map.intersects(polygon)) > 0

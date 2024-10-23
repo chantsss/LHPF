@@ -9,6 +9,7 @@ pluto_planner:
   candidate_min_num: 10
   learning_based_score_weight: 0.3
   challenge_mode: 
+  expansion_factor: 1.0
   
   planner:
     _target_: src.models.pluto.pluto_model.PlanningModel
@@ -29,7 +30,9 @@ pluto_planner:
     state_dropout: 0.75
     use_ego_history: false
     state_attn_encoder: true
-    use_hidden_proj: false
+    use_hidden_proj: true
+    ref_free_traj: true
+    cat_x: true
 
     feature_builder:
       _target_: src.feature_builders.pluto_feature_builder.PlutoFeatureBuilder
