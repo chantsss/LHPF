@@ -1,0 +1,13 @@
+# @package _global_
+job_name: tesla
+py_func: train
+objective_aggregate_mode: mean
+
+defaults:
+        - override /data_augmentation:
+                  - contrastive_scenario_generator
+        - override /splitter: nuplan
+        - override /model: tesla_model
+        - override /scenario_filter: training_scenarios_tiny
+        - override /custom_trainer: tesla_trainer
+        - override /lightning: custom_lightning

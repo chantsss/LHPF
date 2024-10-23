@@ -1,0 +1,4 @@
+_target_: src.models.tesla.tesla_trainer.LightningTrainer
+_convert_: "all"
+
+base_model_path: "/ssddata/ytianbc/LHPF/LHPF/pluto_1M_aux_cil.ckpt"
