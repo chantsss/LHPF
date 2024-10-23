@@ -159,6 +159,15 @@ class PlanningModel(TorchModuleWrapper):
             data["static_objects"]["position"][:, i] = torch.matmul(data["static_objects"]["position"][:, i] - center_xy.squeeze(1), rotate_mat.squeeze(1))
             data["static_objects"]["heading"][:, i] -= center_angle.squeeze(1)
 
+            data["reference_line"]["position"][:, i] = torch.matmul(data["reference_line"]["position"][:, i] - center_xy.unsqueeze(1), rotate_mat.unsqueeze(1))
+            data["reference_line"]["vector"][:, i] = torch.matmul(data["reference_line"]["vector"][:, i], rotate_mat.unsqueeze(1))
+            data["reference_line"]["orientation"][:, i] -= center_angle.unsqueeze(1)
+
+            if "current_states" in data:
+                data["current_state"] = data["current_states"][:, i, index] 
+            else:
+                data["current_state"][:, i, 5] -= center_angle
+                
         return data
 
     def forward(self, data):
