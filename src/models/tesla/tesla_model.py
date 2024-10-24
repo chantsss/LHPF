@@ -20,6 +20,8 @@ from .modules.static_objects_encoder import StaticObjectsEncoder
 from .modules.planning_decoder import PlanningDecoder
 from .layers.mlp_layer import MLPLayer
 from .modules.tesla_aggregate import TemporalAggregate
+from .pluto_model import PlutoModel
+from src.utils.utils import load_checkpoint
 
 # no meaning, required by nuplan
 trajectory_sampling = TrajectorySampling(num_poses=8, time_horizon=8, interval_length=1)
@@ -30,7 +32,7 @@ class PlanningModel(TorchModuleWrapper):
                  encoder_depth=4, decoder_depth=4, drop_path=0.2, dropout=0.1, num_heads=8, num_modes=6, use_ego_history=False,
                  state_attn_encoder=True, state_dropout=0.75, use_hidden_proj=False, cat_x=False, ref_free_traj=False,
                  use_history_attention=False, use_history_attention_intervals=1, cluster_results_file_path=None,
-                 feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder()) -> None:
+                 feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder(), base_model_path=None) -> None:
         super().__init__(feature_builders=[feature_builder],
                          target_builders=[EgoTrajectoryTargetBuilder(trajectory_sampling)],
                          future_trajectory_sampling=trajectory_sampling)
@@ -105,6 +107,25 @@ class PlanningModel(TorchModuleWrapper):
             self.ref_free_decoder = MLPLayer(dim, 2 * dim, future_steps * 4)
 
         self.apply(self._init_weights)
+
+        if base_model_path is not None:
+            weights = load_checkpoint(base_model_path)
+            base_model = PlutoModel(dim=self.dim, state_channel=self.state_channel, \
+                                        polygon_channel=self.polygon_channel, history_channel=self.history_channel, \
+                                            history_steps=self.history_steps, future_steps=self.future_steps, encoder_depth=self.encoder_depth, \
+                                            decoder_depth=self.decoder_depth, drop_path=self.drop_path, dropout=self.dropout, num_heads=self.num_heads, \
+                                            num_modes=self.num_modes, use_ego_history=self.use_ego_history, state_attn_encoder=self.state_attn_encoder, \
+                                            state_dropout=self.state_dropout, use_hidden_proj=self.use_hidden_proj, cat_x=self.cat_x, \
+                                            ref_free_traj=self.ref_free_traj)
+            base_model.load_state_dict(weights)
+            for name, param in self.named_parameters():
+                if name in base_model.state_dict():
+                    # print("Loading weights for", name)
+                    param.data.copy_(base_model.state_dict()[name])
+                    # and freeze the parameters
+                    param.requires_grad = False
+            print("Base model loaded successfully")
+            del base_model
 
     def _init_select_indices(self):
         if self.use_history_attention:
@@ -315,8 +336,8 @@ class PlanningModel(TorchModuleWrapper):
             "prediction": prediction,  # (bs, A-1, T, 2)
         }
 
-        # if self.use_hidden_proj:
-        #     out["hidden"] = self.hidden_proj(scene_enc[:, 0])
+        if self.use_hidden_proj:
+            out["hidden"] = self.hidden_proj(scene_enc[:, 0])
 
         if self.ref_free_traj:
             # ref_free_traj = self.ref_free_decoder(scene_enc[:, 0]).reshape(

@@ -22,6 +22,7 @@ cat_x: true
 use_history_attention: true
 use_history_attention_intervals: 10
 cluster_results_file_path: "/ssddata/ytianbc/LHPF/LHPF/cluster_results_1_10.pkl"
+base_model_path:
 
 feature_builder:
   _target_: src.feature_builders.pluto_feature_builder.PlutoFeatureBuilder

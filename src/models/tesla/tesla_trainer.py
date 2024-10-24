@@ -78,6 +78,7 @@ class LightningTrainer(pl.LightningModule):
         for name, param in self.model.named_parameters():
             if name in base_model.state_dict():
                 param.data.copy_(base_model.state_dict()[name])
+                # print("load weight from base model: ", name)
                 # and freeze the parameters
                 param.requires_grad = False
 
