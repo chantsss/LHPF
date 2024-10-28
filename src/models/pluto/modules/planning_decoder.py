@@ -185,4 +185,4 @@ class PlanningDecoder(nn.Module):
 
         traj = torch.cat([loc, yaw, vel], dim=-1)
 
-        return traj, pi
+        return traj, pi, q
