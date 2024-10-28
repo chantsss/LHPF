@@ -172,6 +172,24 @@ class PlanningModel(TorchModuleWrapper):
     def forward(self, data):
         x, pos, key_padding_mask, agent_pos, agent_heading, bs, A = self.encode(data)
         out = self.decode(x, pos, key_padding_mask, agent_pos, agent_heading, bs, A, data)
+
+        list_data = self.generate_his_features(data)
+        temporal_m = []
+        for time_shift in range(len(self.select_indices)):
+            # if time_shift is the last time step, then output the scene_enc,\
+            #  pos, key_padding_mask, agent_pos, agent_heading, bs, A, prediction, ref_free_traj, and temporal_m
+            if time_shift == len(self.select_indices) - 1:
+                with torch.no_grad():
+                    scene_enc, pos, key_padding_mask, agent_pos, agent_heading, bs, A, \
+                        prediction, ref_free_traj, pred_embedding  = self.forward_base(list_data[time_shift], last_one=True)
+            else:
+                with torch.no_grad():
+                    pred_embedding = self.forward_base(list_data[time_shift])
+            temporal_m.append(pred_embedding)
+
+        out = self.forward_training(data, scene_enc, pos, key_padding_mask,\
+                                           agent_pos, agent_heading, bs, A, temporal_m, prediction, ref_free_traj)
+
         return out
 
     def forward_base(self, data, last_one=False):
@@ -232,6 +250,42 @@ class PlanningModel(TorchModuleWrapper):
         else:
             # return scene_enc, pos, key_padding_mask, agent_pos, agent_heading, bs, A, prediction, ref_free_traj, pred_embedding
             return x, pos, key_padding_mask, agent_pos, agent_heading, bs, A, prediction, ref_free_traj, pred_embedding
+
+    def encode(self, data):
+        agent_pos = data["agent"]["position"][:, :, self.history_steps - 1]
+        agent_heading = data["agent"]["heading"][:, :, self.history_steps - 1]
+        agent_mask = data["agent"]["valid_mask"][:, :, : self.history_steps]
+        polygon_center = data["map"]["polygon_center"]
+        polygon_mask = data["map"]["valid_mask"]
+
+        bs, A = agent_pos.shape[0:2]
+
+        position = torch.cat([agent_pos, polygon_center[..., :2]], dim=1)
+        angle = torch.cat([agent_heading, polygon_center[..., 2]], dim=1)
+        angle = (angle + math.pi) % (2 * math.pi) - math.pi
+        pos = torch.cat([position, angle.unsqueeze(-1)], dim=-1)
+
+        agent_key_padding = ~(agent_mask.any(-1))
+        polygon_key_padding = ~(polygon_mask.any(-1))
+        key_padding_mask = torch.cat([agent_key_padding, polygon_key_padding], dim=-1)
+
+        x_agent = self.agent_encoder(data)
+        x_polygon = self.map_encoder(data)
+        x_static, static_pos, static_key_padding = self.static_objects_encoder(data)
+
+        x = torch.cat([x_agent, x_polygon, x_static], dim=1)
+
+        pos = torch.cat([pos, static_pos], dim=1)
+        pos_embed = self.pos_emb(pos)
+
+        key_padding_mask = torch.cat([key_padding_mask, static_key_padding], dim=-1)
+        x = x + pos_embed
+
+        for blk in self.encoder_blocks:
+            x = blk(x, key_padding_mask=key_padding_mask, return_attn_weights=False)
+        x = self.norm(x)
+
+        return x, pos, key_padding_mask, agent_pos, agent_heading, bs, A
 
     def decode(self, x, pos, key_padding_mask, agent_pos, agent_heading, bs, A, data):
         prediction = self.agent_predictor(x[:, 1:A])
@@ -316,8 +370,10 @@ class PlanningModel(TorchModuleWrapper):
         #     scene_enc, pos, key_padding_mask, agent_pos, agent_heading, bs, A = self.base_model.encode(list_data[time_shift])
         #     _, pred_embedding, _ = self.base_model.decode_for_agg(scene_enc, pos, key_padding_mask, agent_pos, agent_heading, bs, A, list_data[time_shift])
         #     temporal_m.append(pred_embedding)
-
-        temporal_m = torch.stack(temporal_m, dim=1)
+        if len (temporal_m) == 0:
+            temporal_m = None   
+        else:
+            temporal_m = torch.stack(temporal_m, dim=1)
         # sum to agreegate the temporal information
         # temporal_m = temporal_m.sum(dim=1)
         if train_pre_ref_free_traj:
@@ -393,3 +449,70 @@ class PlanningModel(TorchModuleWrapper):
                 )
 
         return out
+
+    def generate_his_features(self, data):
+        used_T = len(self.select_indices)
+    
+        list_data = []
+        for i, index in enumerate(self.select_indices):
+            cur_state = data["agent"]["position"][:, 0, index]
+            center_angle = data["agent"]["heading"][:, 0, index]
+            center_xy, center_angle = cur_state[:, :2].clone().unsqueeze(1).unsqueeze(1), center_angle.clone().unsqueeze(1).unsqueeze(1)
+
+            rotate_mat = torch.stack([
+                torch.cos(center_angle), -torch.sin(center_angle),
+                torch.sin(center_angle), torch.cos(center_angle)
+            ], dim=1).reshape(-1, 2, 2).unsqueeze(1)
+
+            data_dict = {
+                "agent": {
+                    "position": torch.matmul(data["agent"]["position"] - center_xy, rotate_mat),
+                    "velocity": torch.matmul(data["agent"]["velocity"], rotate_mat),
+                    "heading": data["agent"]["heading"] - center_angle,
+                    "shape": data["agent"]["shape"],
+                    "category": data["agent"]["category"],
+                    "valid_mask": data["agent"]["valid_mask"],
+                },
+                "map": {
+                    "point_position": torch.matmul(data["map"]["point_position"] - center_xy.unsqueeze(1), rotate_mat.unsqueeze(1)),
+                    "point_vector": torch.matmul(data["map"]["point_vector"], rotate_mat.unsqueeze(1)),
+                    "point_orientation": data["map"]["point_orientation"] - center_angle.unsqueeze(1),
+                    "polygon_position": torch.matmul(data["map"]["polygon_position"] - center_xy.squeeze(1), rotate_mat.squeeze(1)),
+                    "polygon_orientation": data["map"]["polygon_orientation"] - center_angle.squeeze(1),
+                    "polygon_center": torch.cat((torch.matmul(data["map"]["polygon_center"][..., :2] - \
+                                        center_xy.squeeze(1), rotate_mat.squeeze(1)), data["map"]["polygon_center"][..., 2].unsqueeze(-1) - \
+                                            center_angle), dim=-1),
+                    "polygon_type": data["map"]["polygon_type"],
+                    "polygon_on_route": data["map"]["polygon_on_route"],
+                    "polygon_tl_status": data["map"]["polygon_tl_status"],
+                    "polygon_has_speed_limit": data["map"]["polygon_has_speed_limit"],
+                    "polygon_speed_limit": data["map"]["polygon_speed_limit"],
+                    "valid_mask": data["map"]["valid_mask"],
+                },
+                "static_objects": {
+                    "position": torch.matmul(data["static_objects"]["position"] - center_xy.squeeze(1), rotate_mat.squeeze(1)),
+                    "heading": data["static_objects"]["heading"] - center_angle.squeeze(1),
+                    "category": data["static_objects"]["category"],
+                    "valid_mask": data["static_objects"]["valid_mask"],
+                    "shape": data["static_objects"]["shape"],
+                },
+                "reference_line": {
+                    "position": torch.matmul(data["reference_line"]["position"] - center_xy, rotate_mat),
+                    "vector": torch.matmul(data["reference_line"]["vector"], rotate_mat),
+                    "orientation": data["reference_line"]["orientation"] - center_angle,
+                    "valid_mask": data["reference_line"]["valid_mask"],
+                },
+                "current_state": data["current_state"],
+            }
+            # current_state includes x,y, heading, rear_axle_velocity_2d.x, rear_axle_acceleration_2d.x, steering_angle, yaw_rate
+            data_dict["current_state"][:, :3] = 0
+            # if not the last time step, tranform the steering_angle
+            if i != len(self.select_indices) - 1:
+                data_dict["current_state"][:, 5] -= center_angle.squeeze()
+
+            list_data.append(data_dict)
+
+        # 还原原始数据
+        # data.update(original_data)
+
+        return list_data

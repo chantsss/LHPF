@@ -165,9 +165,13 @@ class TemporalAggregate(nn.Module):
         q = self.q_proj(torch.cat([r_emb, m_emb], dim=-1))
         
         #### Temporal Aggregate Layer Start ####
+        # _, _, M, D= q.shape
+        # print('q.shape is ', q.shape)
+        # print('temporal_m.shape is ', temporal_m.shape)
         if temporal_m is not None:
             q = torch.cat([q.unsqueeze(1), temporal_m], dim=1)
-            q = q.sum(1).squeeze(1)
+            q = q.sum(1)
+            # print('after q.shape is ', q.shape)
         #### Temporal Aggregate Layer End ####
 
         for blk in self.decoder_blocks:
