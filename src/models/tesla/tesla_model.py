@@ -370,7 +370,9 @@ class PlanningModel(TorchModuleWrapper):
         #     scene_enc, pos, key_padding_mask, agent_pos, agent_heading, bs, A = self.base_model.encode(list_data[time_shift])
         #     _, pred_embedding, _ = self.base_model.decode_for_agg(scene_enc, pos, key_padding_mask, agent_pos, agent_heading, bs, A, list_data[time_shift])
         #     temporal_m.append(pred_embedding)
-        if len (temporal_m) == 0:
+        # check temporal_m list has None or not
+        if None in temporal_m:
+            # print('temporal_m has None')
             temporal_m = None   
         else:
             temporal_m = torch.stack(temporal_m, dim=1)
@@ -442,11 +444,14 @@ class PlanningModel(TorchModuleWrapper):
                 out["output_trajectory"] = best_trajectory
                 out["candidate_trajectories"] = out_trajectory
             else:
+                #print trajectory is None
+                # print('trajectory is None')
                 out["output_trajectory"] = out["output_ref_free_trajectory"]
                 out["probability"] = torch.zeros(1, 0, 0)
                 out["candidate_trajectories"] = torch.zeros(
                     1, 0, 0, self.future_steps, 3
                 )
+                # print("probability is ", out["probability"])
 
         return out
 
