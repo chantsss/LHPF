@@ -39,6 +39,7 @@ class LightningTrainer(pl.LightningModule):
         warmup_epochs,
         use_collision_loss=True,
         use_comfort_loss=False,
+        train_pre_ref_free_traj=False,  
         use_contrast_loss=False,
         regulate_yaw=False,
         objective_aggregate_mode: str = "mean",
@@ -86,6 +87,13 @@ class LightningTrainer(pl.LightningModule):
         # make the parameters of the temporal_aggregate_layer trainable
         for param in self.model.temporal_aggregate_layer.parameters():
             param.requires_grad = True
+        # make the parameters of the agent predictor and ref trainable
+        if train_pre_ref_free_traj:
+            print("training pre ref free traj")
+            for param in self.model.agent_predictor.parameters():
+                param.requires_grad = True
+            for param in self.model.ref_free_decoder.parameters():
+                param.requires_grad = True
 
         self.lr = lr
         self.weight_decay = weight_decay
@@ -96,6 +104,7 @@ class LightningTrainer(pl.LightningModule):
         self.use_collision_loss = use_collision_loss
         self.use_comfort_loss = use_comfort_loss
         self.use_contrast_loss = use_contrast_loss
+        self.train_pre_ref_free_traj = train_pre_ref_free_traj
         self.regulate_yaw = regulate_yaw
 
         self.radius = model.radius
@@ -220,7 +229,7 @@ class LightningTrainer(pl.LightningModule):
             temporal_m.append(pred_embedding)
 
         res = self.model.forward_training(features["feature"].data, scene_enc, pos, key_padding_mask,\
-                                           agent_pos, agent_heading, bs, A, temporal_m, prediction, ref_free_traj)
+                                           agent_pos, agent_heading, bs, A, temporal_m, prediction, ref_free_traj, train_pre_ref_free_traj=self.train_pre_ref_free_traj)
 
         losses = self._compute_objectives(res, features["feature"].data)
         
@@ -288,7 +297,9 @@ class LightningTrainer(pl.LightningModule):
         ego_reg_loss, ego_cls_loss, collision_loss, comfort_loss, speed_loss = self.get_planning_loss(
             data, trajectory, probability, valid_mask[:, 0], target[:, 0], train_num
         )
-        if ref_free_trajectory is not None:
+
+        if ref_free_trajectory is not None and self.train_pre_ref_free_traj:
+            
             ego_ref_free_reg_loss = F.smooth_l1_loss(
                 ref_free_trajectory[:train_num],
                 target[:, 0, :, : ref_free_trajectory.shape[-1]],
@@ -301,16 +312,19 @@ class LightningTrainer(pl.LightningModule):
             ego_ref_free_reg_loss = ego_reg_loss.new_zeros(1)
 
         # prediction loss
-        prediction_loss = self.get_prediction_loss(
-            prediction, valid_mask[:, 1:], target[:, 1:]
-        )
+        if self.train_pre_ref_free_traj:
+            prediction_loss = self.get_prediction_loss(
+                prediction, valid_mask[:, 1:], target[:, 1:]
+            )
+        else:
+            prediction_loss = ego_reg_loss.new_zeros(1)
 
         if self.training and self.use_contrast_loss:
             contrastive_loss = self._compute_contrastive_loss(
                 res["hidden"], data["data_n_valid_mask"]
             )
         else:
-            contrastive_loss = prediction_loss.new_zeros(1)
+            contrastive_loss = ego_reg_loss.new_zeros(1)
 
         loss = (
             ego_reg_loss
@@ -829,3 +843,4 @@ def recursive_update(d, u):
         else:
             d[k] = v
     return d
+

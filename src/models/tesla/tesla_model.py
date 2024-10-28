@@ -308,7 +308,7 @@ class PlanningModel(TorchModuleWrapper):
         return out
 
     def forward_training(self, data, scene_enc, pos, key_padding_mask, \
-                         agent_pos, agent_heading, bs, A, temporal_m, prediction, ref_free_traj):
+                         agent_pos, agent_heading, bs, A, temporal_m, prediction, ref_free_traj, train_pre_ref_free_traj=False):
         
         # list_data = self.generate_his_features(data)
         # temporal_m = []
@@ -320,7 +320,8 @@ class PlanningModel(TorchModuleWrapper):
         temporal_m = torch.stack(temporal_m, dim=1)
         # sum to agreegate the temporal information
         # temporal_m = temporal_m.sum(dim=1)
-        # prediction = self.agent_predictor(scene_enc[:, 1:A]) 
+        if train_pre_ref_free_traj:
+            prediction = self.agent_predictor(scene_enc[:, 1:A]) 
         ref_line_available = data["reference_line"]["position"].shape[1] > 0
     
         if ref_line_available:
@@ -340,9 +341,10 @@ class PlanningModel(TorchModuleWrapper):
             out["hidden"] = self.hidden_proj(scene_enc[:, 0])
 
         if self.ref_free_traj:
-            # ref_free_traj = self.ref_free_decoder(scene_enc[:, 0]).reshape(
-            #     bs, self.future_steps, 4
-            # )
+            if train_pre_ref_free_traj:
+                ref_free_traj = self.ref_free_decoder(scene_enc[:, 0]).reshape(
+                    bs, self.future_steps, 4
+                )
             out["ref_free_trajectory"] = ref_free_traj
 
         if not self.training:
