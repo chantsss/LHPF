@@ -43,6 +43,7 @@ class PlanningModel(TorchModuleWrapper):
         state_attn_encoder=True,
         state_dropout=0.75,
         use_hidden_proj=False,
+        use_hidden_proj_at_q=False,
         cat_x=False,
         ref_free_traj=False,
         feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder(),
@@ -125,6 +126,11 @@ class PlanningModel(TorchModuleWrapper):
             nn.init.normal_(m.weight, mean=0.0, std=0.02)
 
     def forward(self, data):
+        x, pos, key_padding_mask, agent_pos, agent_heading, bs, A = self.encode(data)
+        out = self.decode(x, pos, key_padding_mask, agent_pos, agent_heading, bs, A, data)
+        return out
+
+    def encode(self, data):
         agent_pos = data["agent"]["position"][:, :, self.history_steps - 1]
         agent_heading = data["agent"]["heading"][:, :, self.history_steps - 1]
         agent_mask = data["agent"]["valid_mask"][:, :, : self.history_steps]
@@ -158,12 +164,15 @@ class PlanningModel(TorchModuleWrapper):
             x = blk(x, key_padding_mask=key_padding_mask, return_attn_weights=False)
         x = self.norm(x)
 
+        return x, pos, key_padding_mask, agent_pos, agent_heading, bs, A
+
+    def decode(self, x, pos, key_padding_mask, agent_pos, agent_heading, bs, A, data):
         prediction = self.agent_predictor(x[:, 1:A])
 
         ref_line_available = data["reference_line"]["position"].shape[1] > 0
 
         if ref_line_available:
-            trajectory, probability = self.planning_decoder(
+            trajectory, probability, q = self.planning_decoder(
                 data, {"enc_emb": x, "enc_key_padding_mask": key_padding_mask}
             )
         else:
@@ -175,10 +184,11 @@ class PlanningModel(TorchModuleWrapper):
             "prediction": prediction,  # (bs, A-1, T, 2)
         }
 
-        # print('out["prediction"].shape is ', out["prediction"].shape)
-
         if self.use_hidden_proj:
-            out["hidden"] = self.hidden_proj(x[:, 0])
+            if self.use_hidden_proj_at_q:
+                out["hidden"] = self.hidden_proj(q)
+            else:
+                out["hidden"] = self.hidden_proj(x[:, 0])
 
         if self.ref_free_traj:
             ref_free_traj = self.ref_free_decoder(x[:, 0]).reshape(
