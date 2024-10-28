@@ -61,6 +61,7 @@ class PlanningModel(TorchModuleWrapper):
         self.num_modes = num_modes
         self.radius = feature_builder.radius
         self.ref_free_traj = ref_free_traj
+        self.use_hidden_proj_at_q = use_hidden_proj_at_q
 
         self.pos_emb = FourierEmbedding(3, dim, 64)
 
