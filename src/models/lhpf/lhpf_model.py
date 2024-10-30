@@ -201,10 +201,7 @@ class PlanningModel(TorchModuleWrapper):
             data["reference_line"]["vector"][:, i] = torch.matmul(data["reference_line"]["vector"][:, i], rotate_mat.unsqueeze(1))
             data["reference_line"]["orientation"][:, i] -= center_angle.unsqueeze(1)
 
-            if "current_states" in data:
-                data["current_state"] = data["current_states"][:, i, index] 
-            else:
-                data["current_state"][:, i, 5] -= center_angle
+            data["current_state"] = data["current_states"][:, index-1]
                 
         return data
 
