@@ -308,19 +308,20 @@ class PlutoPlanner(AbstractPlanner):
         """
 
         # check if candidate_trajectories.shape[0] is 0, then assgin 0 to sorted_candidate_trajectories and sorted_probability, and use ref_free_trajectory
-        if candidate_trajectories.shape[0] == 0:
-            sorted_candidate_trajectories = np.zeros((1, 80, 3))
-            sorted_probability = np.zeros(1)
+        # if candidate_trajectories.shape[0] == 0:
+        #     sorted_candidate_trajectories = np.zeros((1, 80, 3))
+        #     sorted_probability = np.zeros(1)
         
-        else:
-            if len(candidate_trajectories.shape) == 4:
-                n_ref, n_mode, T, C = candidate_trajectories.shape
-                candidate_trajectories = candidate_trajectories.reshape(-1, T, C)
-                probability = probability.reshape(-1)
-            sorted_idx = np.argsort(-probability)
-            sorted_candidate_trajectories = candidate_trajectories[sorted_idx][: self._topk]
-            sorted_probability = probability[sorted_idx][: self._topk]
-            sorted_probability = softmax(sorted_probability)
+        # else:
+        if len(candidate_trajectories.shape) == 4:
+            n_ref, n_mode, T, C = candidate_trajectories.shape
+            candidate_trajectories = candidate_trajectories.reshape(-1, T, C)
+            probability = probability.reshape(-1)
+            
+        sorted_idx = np.argsort(-probability)
+        sorted_candidate_trajectories = candidate_trajectories[sorted_idx][: self._topk]
+        sorted_probability = probability[sorted_idx][: self._topk]
+        sorted_probability = softmax(sorted_probability)
 
         if ref_free_trajectory is not None:
             sorted_candidate_trajectories = np.concatenate(
