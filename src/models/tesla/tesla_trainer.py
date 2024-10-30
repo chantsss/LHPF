@@ -137,6 +137,8 @@ class LightningTrainer(pl.LightningModule):
         used_T = len(self.model.select_indices)
     
         list_data = []
+        # reverse data["current_states"], do not use ::-1
+        data["current_states"] = data["current_states"].flip(1)
         for i, index in enumerate(self.model.select_indices):
             cur_state = data["agent"]["position"][:, 0, index]
             center_angle = data["agent"]["heading"][:, 0, index]
@@ -188,10 +190,8 @@ class LightningTrainer(pl.LightningModule):
                 "current_state": data["current_state"],
             }
             # current_state includes x,y, heading, rear_axle_velocity_2d.x, rear_axle_acceleration_2d.x, steering_angle, yaw_rate
-            data_dict["current_state"][:, :3] = 0
-            # if not the last time step, tranform the steering_angle
-            if i != len(self.model.select_indices) - 1:
-                data_dict["current_state"][:, 5] -= center_angle.squeeze()
+            data_dict["current_state"] = data["current_states"][:, index-1]
+            # data_dict["current_state"][:, :3] = 0
 
             list_data.append(data_dict)
 
