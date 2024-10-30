@@ -18,6 +18,7 @@ use_ego_history: false
 state_attn_encoder: true
 use_hidden_proj: true
 ref_free_traj: true
+use_hidden_proj_at_q: true
 cat_x: true
 
 feature_builder:
