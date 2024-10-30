@@ -25,7 +25,7 @@ class PlutoFeature(AbstractModelFeature):
         batch_data = {}
 
         pad_keys = ["agent", "map"]
-        stack_keys = ["current_state", "origin", "angle"]
+        stack_keys = ["current_state", "origin", "angle", "current_states"]
 
         if "reference_line" in feature_list[0].data:
             pad_keys.append("reference_line")
