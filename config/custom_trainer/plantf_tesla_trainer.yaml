@@ -1,0 +1,4 @@
+_target_: src.models.plantf_tesla.plantf_tesla_trainer.LightningTrainer
+_convert_: "all"
+
+base_model_path: "/home/sheng/pluto/planTF.ckpt"
