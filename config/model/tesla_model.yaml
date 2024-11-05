@@ -20,7 +20,8 @@ ref_free_traj: true
 use_hidden_proj: true
 cat_x: true
 use_history_attention: true
-use_history_attention_intervals: 10
+attention_fusion: false
+use_history_attention_intervals: 1
 cluster_results_file_path: "/ssddata/ytianbc/LHPF/LHPF/cluster_results_1_10.pkl"
 base_model_path:
 
