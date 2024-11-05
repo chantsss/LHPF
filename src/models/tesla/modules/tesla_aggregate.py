@@ -98,6 +98,9 @@ class TemporalAggregate(nn.Module):
         future_steps,
         yaw_constraint=False,
         cat_x=False,
+        attention_fusion=False,
+        select_indices=None,
+        interval=None,
     ) -> None:
         super().__init__()
 
@@ -112,6 +115,20 @@ class TemporalAggregate(nn.Module):
                 for _ in range(decoder_depth)
             ]
         )
+
+        self.attention_fusion = attention_fusion
+        if self.attention_fusion:
+            
+            # build a periodic positional embedding for select_indices, select_indices ranges from 0 to 19
+            self.t_emb = select_indices
+            self.t_emb = torch.sin(self.t_emb / 10000 ** (torch.arange(0, 20, interval) / 20))
+            self.t_emb = self.t_emb.unsqueeze(0).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+            # make self.t_emb to be a parameter unlearnable
+            self.t_emb = nn.Parameter(self.t_emb, requires_grad=False)
+
+            self.attention_fusion_layer = nn.MultiheadAttention(
+                dim, num_heads, dropout=dropout, batch_first=True
+            )
 
         self.r_pos_emb = FourierEmbedding(3, dim, 64)
         self.r_encoder = PointsEncoder(6, dim)
@@ -169,8 +186,23 @@ class TemporalAggregate(nn.Module):
         # print('q.shape is ', q.shape)
         # print('temporal_m.shape is ', temporal_m.shape)
         if temporal_m is not None:
-            q = torch.cat([q.unsqueeze(1), temporal_m], dim=1)
-            q = q.sum(1)
+            if not self.attention_fusion:
+                q = torch.cat([q.unsqueeze(1), temporal_m], dim=1)
+                q = q.sum(1)
+            else:
+                temporal_m = self.t_emb + temporal_m
+                # use a MHA layer to fuse the temporal_m information, and add to q
+                q = q.unsqueeze(1)
+                # attention at T dimension
+                # view(bs, T, R, M, D) -> view(bs*R*M, T, D)
+                q = q.view(bs, R * self.num_mode, -1)
+                T = self.t_emb.shape[1]
+                temporal_m = temporal_m.view(bs, R * self.num_mode * T, -1)
+                q_ = self.attention_fusion_layer(q, temporal_m, temporal_m)[0]
+                q = q + q_
+                # reshape back to (bs, R, M, D)
+                q = q.view(bs, R, self.num_mode, -1)
+        
             # print('after q.shape is ', q.shape)
         #### Temporal Aggregate Layer End ####
 

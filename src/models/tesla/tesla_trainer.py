@@ -83,10 +83,14 @@ class LightningTrainer(pl.LightningModule):
                 # and freeze the parameters
                 param.requires_grad = False
 
-        self.model.temporal_aggregate_layer.load_state_dict(base_model.planning_decoder.state_dict())
-        # make the parameters of the temporal_aggregate_layer trainable
-        for param in self.model.temporal_aggregate_layer.parameters():
-            param.requires_grad = True
+        # self.model.temporal_aggregate_layer.load_state_dict(base_model.planning_decoder.state_dict())
+        for name, param in self.model.temporal_aggregate_layer.named_parameters():
+            if name in base_model.planning_decoder.state_dict():
+                param.data.copy_(base_model.planning_decoder.state_dict()[name])
+                # print("load weight from base model: ", name)
+                # make the parameters of the temporal_aggregate_layer trainable
+                param.requires_grad = True
+
         # make the parameters of the agent predictor and ref trainable
         if train_pre_ref_free_traj:
             print("training pre ref free traj")

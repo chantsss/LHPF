@@ -31,7 +31,7 @@ class PlanningModel(TorchModuleWrapper):
     def __init__(self, dim=128, state_channel=6, polygon_channel=6, history_channel=9, history_steps=21, future_steps=80,
                  encoder_depth=4, decoder_depth=4, drop_path=0.2, dropout=0.1, num_heads=8, num_modes=6, use_ego_history=False,
                  state_attn_encoder=True, state_dropout=0.75, use_hidden_proj=False, cat_x=False, ref_free_traj=False,
-                 use_history_attention=False, use_history_attention_intervals=1, cluster_results_file_path=None,
+                 use_history_attention=False, use_history_attention_intervals=1, cluster_results_file_path=None, attention_fusion=False, 
                  feature_builder: PlutoFeatureBuilder = PlutoFeatureBuilder(), base_model_path=None) -> None:
         super().__init__(feature_builders=[feature_builder],
                          target_builders=[EgoTrajectoryTargetBuilder(trajectory_sampling)],
@@ -56,6 +56,7 @@ class PlanningModel(TorchModuleWrapper):
         self.ref_free_traj = ref_free_traj
         self.radius = feature_builder.radius
         self.use_history_attention = use_history_attention
+        self.attention_fusion = attention_fusion
         self.use_history_attention_intervals = use_history_attention_intervals
         self.select_indices = self._init_select_indices()
         self.compliant_length = torch.tensor([70], dtype=torch.long)
@@ -98,6 +99,9 @@ class PlanningModel(TorchModuleWrapper):
             dropout=dropout,
             cat_x=cat_x,
             future_steps=future_steps,
+            attention_fusion=attention_fusion,
+            select_indices = self.select_indices,
+            interval=self.use_history_attention_intervals,
         )
 
         if use_hidden_proj:
