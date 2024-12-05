@@ -17,21 +17,23 @@
 ![](assets/overview.png)
 
 ## Demo
-<div style="display: flex; justify-content: space-around;">
-    <div style="text-align: center;">
-        <img src="assets/baseline.gif" width="400">
-        <p>Baseline</p>
-    </div>
-    <div style="text-align: center;">
-        <img src="assets/lhpf.gif" width="400">
-        <p>LHPF</p>
-    </div>
-</div>
+<table>
+    <tr>
+        <td align="center">
+            <img src="assets/baseline.gif" width="400">
+            <p>Baseline</p>
+        </td>
+        <td align="center">
+            <img src="assets/lhpf.gif" width="400">
+            <p>LHPF</p>
+        </td>
+    </tr>
+</table>
 
 ## News
-**`05.12.2024`:** Github repo initialized.
-**`27.11.2024`:** Project page released.
-**`26.11.2024`:** Paper released on arXiv.
+**`05.12.2024`:** Github repo initialized. <br>
+**`27.11.2024`:** Project page released. <br>
+**`26.11.2024`:** Paper released on arXiv. <br>
 This work is under review, please stay tuned!
 
 
