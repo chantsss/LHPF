@@ -2,7 +2,7 @@
 <img src="assets/logo.png" width="200">
 <h3><span style="color:blue">L</span>ook back the <span style="color:blue">H</span>istory and <span style="color:blue">P</span>lan for the <span style="color:blue">F</span>uture in Autonomous Driving</h3>
 
-[Sheng Wang](https://chantsss.github.io/)<sup>1</sup>, Yao Tian<sup>1</sup>, Xiaodong Mei<sup>1</sup>, Ge Sun<sup>1</sup>, Jie Cheng<sup>1</sup>, Fulong Ma<sup>2</sup>, [Pedro V. Sander](https://www.cse.ust.hk/~psander/)<sup>1</sup>, [Junwei Liang†](https://junweiliang.me/)<sup>1,2,†</sup>
+[Sheng Wang](https://chantsss.github.io/)<sup>1</sup>, Yao Tian<sup>1</sup>, Xiaodong Mei<sup>1</sup>, Ge Sun<sup>1</sup>, [Jie Cheng](https://jchengai.github.io/)<sup>1</sup>, Fulong Ma<sup>2</sup>, [Pedro V. Sander](https://www.cse.ust.hk/~psander/)<sup>1</sup>, [Junwei Liang†](https://junweiliang.me/)<sup>1,2,†</sup>
 †Corresponding authors
  
 <sup>1</sup> HKUST, <sup>2</sup> HKUST(GZ)
