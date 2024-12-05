@@ -17,33 +17,16 @@
 ![](assets/overview.png)
 
 ## Demo
-<div style="display: flex; justify-content: space-between;">
-    <video width="48%" alt="mp1_1" controls autoplay playsInline muted loop>
-        <source src="assets/baseline.mp4" type="video/mp4">
-        Your browser does not support the video tag.
-    </video>
-    <video width="48%" alt="mp2_1" controls autoplay playsInline muted loop>
-        <source src="assets/lhpf.mp4" type="video/mp4">
-        Your browser does not support the video tag.
-    </video>
+<div style="display: flex; justify-content: space-around;">
+    <div style="text-align: center;">
+        <img src="assets/baseline.gif" width="400">
+        <p>Baseline</p>
+    </div>
+    <div style="text-align: center;">
+        <img src="assets/lhpf.gif" width="400">
+        <p>LHPF</p>
+    </div>
 </div>
-
-<script type="text/javascript">
-  document.addEventListener('DOMContentLoaded', function() {
-      var videos = document.querySelectorAll('video');
-      videos.forEach(function(video) {
-          video.autoplay = true;
-          video.controls = true;
-          video.muted = true;
-          video.loop = true;
-          video.playsInline = true;
-          video.playbackRate = 2.0;
-          video.addEventListener('loadedmetadata', function() {
-              this.playbackRate = 2.0;
-          });
-      });
-  });
-</script>
 
 ## News
 **`05.12.2024`:** Github repo initialized.
