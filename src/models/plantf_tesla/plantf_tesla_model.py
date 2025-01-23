@@ -17,6 +17,7 @@ from .modules.trajectory_decoder import TrajectoryDecoder
 from .modules.agent_predictor import AgentPredictor
 from .layers.embedding import FourierEmbedding
 from .modules.tesla_aggregate import TemporalAggregate
+from .modules.static_objects_encoder import StaticObjectsEncoder
 
 # no meaning, required by nuplan
 trajectory_sampling = TrajectorySampling(num_poses=8, time_horizon=8, interval_length=1)
@@ -67,8 +68,8 @@ class PlanningModel(TorchModuleWrapper):
         self.use_history_attention = use_history_attention
         self.use_history_attention_intervals = use_history_attention_intervals
         self.select_indices = self._init_select_indices()
-        self.compliant_length = torch.tensor([70], dtype=torch.long)
-        self.compliant_loss_decay_weights = torch.nn.Parameter(0.9 ** torch.arange(int(self.compliant_length)), requires_grad=False).unsqueeze(-1)
+        # self.compliant_length = torch.tensor([70], dtype=torch.long)
+        # self.compliant_loss_decay_weights = torch.nn.Parameter(0.9 ** torch.arange(int(self.compliant_length)), requires_grad=False).unsqueeze(-1)
 
 
         self.use_history_attention = use_history_attention
@@ -82,7 +83,7 @@ class PlanningModel(TorchModuleWrapper):
             self.select_indices = torch.tensor([19], dtype=torch.long)
 
 
-        self.pos_emb = build_mlp(4, [dim] * 2)
+        self.pos_emb = FourierEmbedding(3, dim, 64)
         self.agent_encoder = AgentEncoder(
             state_channel=state_channel,
             history_channel=history_channel,
@@ -97,8 +98,11 @@ class PlanningModel(TorchModuleWrapper):
         self.map_encoder = MapEncoder(
             dim=dim,
             polygon_channel=polygon_channel,
+            use_lane_boundary=True,
         )
 
+        self.static_objects_encoder = StaticObjectsEncoder(dim=dim)
+        
         self.encoder_blocks = nn.ModuleList(
             TransformerEncoderLayer(dim=dim, num_heads=num_heads, drop_path=dp)
             for dp in [x.item() for x in torch.linspace(0, drop_path, encoder_depth)]
@@ -109,7 +113,7 @@ class PlanningModel(TorchModuleWrapper):
             embed_dim=dim,
             num_modes=num_modes,
             future_steps=future_steps,
-            out_channels=4,
+            out_channels=6,
         )
         self.agent_predictor = AgentPredictor(dim=dim, future_steps=future_steps)
 
@@ -117,7 +121,7 @@ class PlanningModel(TorchModuleWrapper):
             embed_dim=dim,
             num_modes=num_modes,
             future_steps=future_steps,
-            out_channels=4,
+            out_channels=6,
         )
 
         self.apply(self._init_weights)
@@ -200,10 +204,8 @@ class PlanningModel(TorchModuleWrapper):
 
         position = torch.cat([agent_pos, polygon_center[..., :2]], dim=1)
         angle = torch.cat([agent_heading, polygon_center[..., 2]], dim=1)
-        pos = torch.cat(
-            [position, torch.stack([angle.cos(), angle.sin()], dim=-1)], dim=-1
-        )
-        pos_embed = self.pos_emb(pos)
+        angle = (angle + math.pi) % (2 * math.pi) - math.pi
+        pos = torch.cat([position, angle.unsqueeze(-1)], dim=-1)
 
         agent_key_padding = ~(agent_mask.any(-1))
         polygon_key_padding = ~(polygon_mask.any(-1))
@@ -211,8 +213,15 @@ class PlanningModel(TorchModuleWrapper):
 
         x_agent = self.agent_encoder(data)
         x_polygon = self.map_encoder(data)
+        x_static, static_pos, static_key_padding = self.static_objects_encoder(data)
 
-        x = torch.cat([x_agent, x_polygon], dim=1) + pos_embed
+        x = torch.cat([x_agent, x_polygon, x_static], dim=1)
+
+        pos = torch.cat([pos, static_pos], dim=1)
+        pos_embed = self.pos_emb(pos)
+
+        key_padding_mask = torch.cat([key_padding_mask, static_key_padding], dim=-1)
+        x = x + pos_embed
 
         for blk in self.encoder_blocks:
             x = blk(x, key_padding_mask=key_padding_mask)
@@ -221,8 +230,7 @@ class PlanningModel(TorchModuleWrapper):
         return x, pos, key_padding_mask, agent_pos, agent_heading, bs, A
 
     def decode(self, x, pos, key_padding_mask, agent_pos, agent_heading, bs, A, data):
-        trajectory, probability = self.trajectory_decoder(x[:, 0])
-
+        trajectory, probability, _ = self.trajectory_decoder(x[:, 0])
         prediction = self.agent_predictor(x[:, 1:A])
 
         out = {
@@ -232,12 +240,25 @@ class PlanningModel(TorchModuleWrapper):
         }
 
         if not self.training:
-            best_mode = probability.argmax(dim=-1)
-            output_trajectory = trajectory[torch.arange(bs), best_mode]
-            angle = torch.atan2(output_trajectory[..., 3], output_trajectory[..., 2])
-            out["output_trajectory"] = torch.cat(
-                [output_trajectory[..., :2], angle.unsqueeze(-1)], dim=-1
+            output_prediction = torch.cat(
+                [
+                    prediction[..., :2] + agent_pos[:, 1:A, None],
+                    torch.atan2(prediction[..., 3], prediction[..., 2]).unsqueeze(-1)
+                    + agent_heading[:, 1:A, None, None],
+                    prediction[..., 4:6],
+                ],
+                dim=-1,
             )
+            out["output_prediction"] = output_prediction
+
+            angle = torch.atan2(trajectory[..., 3], trajectory[..., 2])
+            out_trajectory = torch.cat(
+                [trajectory[..., :2], angle.unsqueeze(-1)], dim=-1
+            )
+            best_mode = probability.argmax(dim=-1)
+            best_trajectory = trajectory[torch.arange(bs), best_mode]
+            out["output_trajectory"] = best_trajectory
+            out["candidate_trajectories"] = out_trajectory
 
         return out
 
@@ -345,10 +366,8 @@ class PlanningModel(TorchModuleWrapper):
 
         position = torch.cat([agent_pos, polygon_center[..., :2]], dim=1)
         angle = torch.cat([agent_heading, polygon_center[..., 2]], dim=1)
-        pos = torch.cat(
-            [position, torch.stack([angle.cos(), angle.sin()], dim=-1)], dim=-1
-        )
-        pos_embed = self.pos_emb(pos)
+        angle = (angle + math.pi) % (2 * math.pi) - math.pi
+        pos = torch.cat([position, angle.unsqueeze(-1)], dim=-1)
 
         agent_key_padding = ~(agent_mask.any(-1))
         polygon_key_padding = ~(polygon_mask.any(-1))
@@ -356,8 +375,15 @@ class PlanningModel(TorchModuleWrapper):
 
         x_agent = self.agent_encoder(data)
         x_polygon = self.map_encoder(data)
+        x_static, static_pos, static_key_padding = self.static_objects_encoder(data)
 
-        x = torch.cat([x_agent, x_polygon], dim=1) + pos_embed
+        x = torch.cat([x_agent, x_polygon, x_static], dim=1)
+
+        pos = torch.cat([pos, static_pos], dim=1)
+        pos_embed = self.pos_emb(pos)
+
+        key_padding_mask = torch.cat([key_padding_mask, static_key_padding], dim=-1)
+        x = x + pos_embed
 
         for blk in self.encoder_blocks:
             x = blk(x, key_padding_mask=key_padding_mask)
